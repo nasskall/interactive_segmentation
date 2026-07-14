@@ -6,14 +6,20 @@ env/
 # ── Model weights ──────────────────────────────────────────────────────
 # GitHub rejects any file over 100 MB. cocolvis_vit_base.pth (375 MB),
 # sam_vit_b_01ec64.pth (358 MB) and sam2.1_hiera_tiny.pt (149 MB) all exceed
-# it. Checkpoints are re-downloadable from their upstream model zoos, so they
-# stay out of the repo entirely.
-model_weights/
+# it, and are re-downloadable from their upstream model zoos, so they stay out.
+#
+# best_checkpoint_068.pth (41 MB) is the exception: it is the default RITM
+# checkpoint demo.py loads on startup, and the original RITM model zoo is
+# offline, so it is shipped here to keep the app runnable from a clean clone.
+# Note the directory is excluded as `model_weights/*`, not `model_weights/`:
+# git cannot re-include a file whose parent directory is itself excluded.
+model_weights/*
 adapters/
 pretrained_models/
 *.pth
 *.pt
 *.ckpt
+!model_weights/best_checkpoint_068.pth
 
 # ── Data ───────────────────────────────────────────────────────────────
 # Datasets and any clinical/training imagery must never be committed.

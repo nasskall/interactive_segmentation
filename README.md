@@ -55,23 +55,22 @@ upstream. Put whatever you download into `model_weights/`.
 | SimpleClick | [Model zoo](https://drive.google.com/drive/folders/1zVhZefCjsTBxvyxnYMVnbkrNeRCH6y9Y) from the [SimpleClick](https://github.com/uncbiag/SimpleClick) repo, e.g. `cocolvis_vit_base.pth` |
 | SAM | Model-zoo links in the [segment-anything](https://github.com/facebookresearch/segment-anything#model-checkpoints) repo, e.g. `sam_vit_b_01ec64.pth` |
 | SAM 2 | [`sam2.1_hiera_tiny.pt`](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt), or see the [sam2](https://github.com/facebookresearch/sam2) repo |
-| RITM | See the note below. |
+| RITM | Included: `model_weights/best_checkpoint_068.pth`. See the note below. |
 
 ### A note on the RITM checkpoint
 
-`demo.py` loads `model_weights/best_checkpoint_068.pth` on startup, and that
-file is **not** in this repository. The app will not start until you supply a
-RITM checkpoint at that path (or edit `get_model_path()` in `demo.py` to point
-at one you have).
+`demo.py` loads `model_weights/best_checkpoint_068.pth` on startup. That file
+**is** included here (41 MB), so the app runs from a clean clone with no extra
+downloads. It is an HRNet-based RITM model fine-tuned for skin-lesion
+segmentation.
 
-Be aware that the original RITM repositories (`SamsungLabs/ritm_interactive_segmentation`
-and `saic-vul/ritm_interactive_segmentation`) are no longer reachable on GitHub,
-so the published RITM checkpoints no longer have an official source. Any mirror
-you find is unvetted, and PyTorch checkpoints are pickle files. The loader here
-uses `weights_only=True`, which is a meaningful safeguard: leave it on.
-
-If you only want to try the app, SimpleClick, SAM or SAM 2 are easier starting
-points, since their checkpoints are still officially hosted.
+It is bundled because the original RITM repositories
+(`SamsungLabs/ritm_interactive_segmentation` and
+`saic-vul/ritm_interactive_segmentation`) are no longer reachable on GitHub, so
+the published RITM checkpoints have no official source left. If you go looking
+for other RITM weights, treat any mirror as unvetted: PyTorch checkpoints are
+pickle files and can execute code on load. The loader here uses
+`weights_only=True`, which is a real safeguard. Leave it on.
 
 ## Run
 
@@ -103,6 +102,47 @@ Note that SAM and SimpleClick saturate on the synthetic blobs, predicting close
 to the whole frame, so their IoU there is not a quality signal. The smoke test
 only asserts that their plumbing works; judge segmentation quality on real
 imagery.
+
+## Credits
+
+This project stands on four pieces of published research and their authors'
+released code. All credit for the models belongs to them.
+
+**RITM** — the codebase this project is built on. The `isegm/` package, the
+training and evaluation scripts and the `models/` configs all originate here.
+
+> Sofiiuk, Petrov, Konushin. *Reviving Iterative Training with Mask Guidance for
+> Interactive Segmentation*, 2021. [arXiv:2102.06583](https://arxiv.org/abs/2102.06583)
+> · Original repos: `github.com/SamsungLabs/ritm_interactive_segmentation` and
+> `github.com/saic-vul/ritm_interactive_segmentation` (both are no longer
+> reachable on GitHub as of July 2026) · MIT, Copyright (c) 2021 Samsung
+> Electronics Co., Ltd.
+
+**SimpleClick** — the plain-ViT backend, vendored and adapted.
+
+> Liu, Zhang, Niethammer et al. *SimpleClick: Interactive Image Segmentation with
+> Simple Vision Transformers*, ICCV 2023. [arXiv:2210.11006](https://arxiv.org/abs/2210.11006)
+> · [github.com/uncbiag/SimpleClick](https://github.com/uncbiag/SimpleClick) · MIT
+
+**Segment Anything (SAM)** — used as an installed dependency.
+
+> Kirillov, Mintun, Ravi et al. *Segment Anything*, 2023.
+> [arXiv:2304.02643](https://arxiv.org/abs/2304.02643)
+> · [github.com/facebookresearch/segment-anything](https://github.com/facebookresearch/segment-anything)
+> · Apache 2.0
+
+**SAM 2** — used as an installed dependency.
+
+> Ravi, Gabeur, Hu et al. *SAM 2: Segment Anything in Images and Videos*, 2024.
+> [arXiv:2408.00714](https://arxiv.org/abs/2408.00714)
+> · [github.com/facebookresearch/sam2](https://github.com/facebookresearch/sam2)
+> · Apache 2.0
+
+**OpenMMLab** — transformer helper modules under
+`isegm/model/modeling/transformer_helper/` are taken from
+[mmsegmentation](https://github.com/open-mmlab/mmsegmentation) (Apache 2.0) and
+retain their original copyright headers. RITM's HRNet backbone comes from
+[HRNet-Image-Classification](https://github.com/HRNet/HRNet-Image-Classification).
 
 ## Licence
 
