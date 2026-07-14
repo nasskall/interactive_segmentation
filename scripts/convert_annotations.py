@@ -4,7 +4,7 @@ import multiprocessing as mp
 from pathlib import Path
 
 sys.path.insert(0, '.')
-from ritm_interactive_segmentation.isegm.utils.exp import load_config_file
+from isegm.utils.exp import load_config_file
 from scripts.annotations_conversion import openimages, ade20k, coco_lvis
 
 

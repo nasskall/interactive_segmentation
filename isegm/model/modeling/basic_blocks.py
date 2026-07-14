@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from ritm_interactive_segmentation.isegm.model import ops
+from isegm.model import ops
 
 
 class ConvHead(nn.Module):

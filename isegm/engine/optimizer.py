@@ -1,6 +1,6 @@
 import torch
 import math
-from ritm_interactive_segmentation.isegm.utils.log import logger
+from isegm.utils.log import logger
 
 
 def get_optimizer(model, opt_name, opt_kwargs):

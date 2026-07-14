@@ -3,8 +3,8 @@ from time import time
 import numpy as np
 import torch
 
-from ritm_interactive_segmentation.isegm.inference import utils
-from ritm_interactive_segmentation.isegm.inference.clicker import Clicker
+from isegm.inference import utils
+from isegm.inference.clicker import Clicker
 
 try:
     get_ipython()

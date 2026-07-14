@@ -4,8 +4,8 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 
-from ritm_interactive_segmentation.isegm.data.datasets import LvisDataset, CocoDataset
-from ritm_interactive_segmentation.isegm.utils.misc import get_bbox_from_mask, get_bbox_iou
+from isegm.data.datasets import LvisDataset, CocoDataset
+from isegm.utils.misc import get_bbox_from_mask, get_bbox_iou
 from scripts.annotations_conversion.common import get_masks_hierarchy, get_iou, encode_masks
 
 

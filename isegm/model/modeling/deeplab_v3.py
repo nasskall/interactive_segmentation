@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from .basic_blocks import SeparableConv2d
 from .resnet import ResNetBackbone
-from ritm_interactive_segmentation.isegm.model import ops
+from isegm.model import ops
 
 
 class DeepLabV3Plus(nn.Module):

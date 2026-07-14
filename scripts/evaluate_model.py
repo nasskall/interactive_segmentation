@@ -8,11 +8,11 @@ import torch
 import numpy as np
 
 sys.path.insert(0, '.')
-from ritm_interactive_segmentation.isegm.inference import utils
-from ritm_interactive_segmentation.isegm.utils.exp import load_config_file
-from ritm_interactive_segmentation.isegm.utils.vis import draw_probmap, draw_with_blend_and_clicks
-from ritm_interactive_segmentation.isegm.inference.predictors import get_predictor
-from ritm_interactive_segmentation.isegm.inference.evaluation import evaluate_dataset
+from isegm.inference import utils
+from isegm.utils.exp import load_config_file
+from isegm.utils.vis import draw_probmap, draw_with_blend_and_clicks
+from isegm.inference.predictors import get_predictor
+from isegm.inference.evaluation import evaluate_dataset
 
 
 def parse_args():

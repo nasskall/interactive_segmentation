@@ -10,7 +10,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, '.')
-from ritm_interactive_segmentation.isegm.utils.exp import load_config_file
+from isegm.utils.exp import load_config_file
 
 
 def parse_args():

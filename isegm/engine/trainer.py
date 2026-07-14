@@ -10,11 +10,11 @@ import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 
-from ritm_interactive_segmentation.isegm.utils.log import logger, TqdmToLogger, SummaryWriterAvg
-from ritm_interactive_segmentation.isegm.utils.vis import draw_probmap, draw_points
-from ritm_interactive_segmentation.isegm.utils.misc import save_checkpoint
-from ritm_interactive_segmentation.isegm.utils.serialization import get_config_repr
-from ritm_interactive_segmentation.isegm.utils.distributed import get_dp_wrapper, get_sampler, reduce_loss_dict
+from isegm.utils.log import logger, TqdmToLogger, SummaryWriterAvg
+from isegm.utils.vis import draw_probmap, draw_points
+from isegm.utils.misc import save_checkpoint
+from isegm.utils.serialization import get_config_repr
+from isegm.utils.distributed import get_dp_wrapper, get_sampler, reduce_loss_dict
 from .optimizer import get_optimizer
 
 

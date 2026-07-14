@@ -1,4 +1,4 @@
-from ritm_interactive_segmentation.isegm.utils.exp_imports.default import *
+from isegm.utils.exp_imports.default import *
 MODEL_NAME = 'cocolvis_hrnet32'
 
 
