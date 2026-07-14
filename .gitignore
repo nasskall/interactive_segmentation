@@ -1,0 +1,57 @@
+# ── Virtual environment ────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Model weights ──────────────────────────────────────────────────────
+# GitHub rejects any file over 100 MB. cocolvis_vit_base.pth (375 MB),
+# sam_vit_b_01ec64.pth (358 MB) and sam2.1_hiera_tiny.pt (149 MB) all exceed
+# it. Checkpoints are re-downloadable from their upstream model zoos, so they
+# stay out of the repo entirely.
+model_weights/
+adapters/
+pretrained_models/
+*.pth
+*.pt
+*.ckpt
+
+# ── Data ───────────────────────────────────────────────────────────────
+# Datasets and any clinical/training imagery must never be committed.
+datasets/
+training_data/
+synthetic_test/
+experiments/
+
+# ── Logs and scratch output ────────────────────────────────────────────
+*.log
+demo_run.log
+demo_stdout.log
+demo_stderr.log
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# Cython build artefacts (the .pyx sources are tracked)
+isegm/utils/cython_l/*.c
+isegm/utils/cython_l/*.pyd
+
+# ── Branding assets ────────────────────────────────────────────────────
+# Unused since the title bar was removed; kept out of the public repo.
+logo.png
+interactive_demo/logo.png
+
+# ── IDE / editor ───────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+
+# ── Local tool state ───────────────────────────────────────────────────
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
