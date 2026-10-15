@@ -61,3 +61,8 @@ interactive_demo/logo.png
 # ── Local tool state ───────────────────────────────────────────────────
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# ── Frontend ───────────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+*.tsbuildinfo
