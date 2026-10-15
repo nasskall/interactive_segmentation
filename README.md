@@ -1,8 +1,9 @@
 # Interactive Segmentation
 
-A desktop app for click-based interactive image segmentation. You click on an
-object, the model returns a mask, and you refine it with further positive and
-negative clicks.
+A desktop app for click-based interactive image segmentation, with a web
+version of the core workflow (see [Web app](#web-app-rest-api--react)). You
+click on an object, the model returns a mask, and you refine it with further
+positive and negative clicks.
 
 Four backends are supported behind a single UI, and any of them can be adapted
 to your own imagery with LoRA, either from a small labelled set or from the
@@ -46,9 +47,10 @@ intend to use those backends; the app runs without them.
 
 ## Checkpoints
 
-**No model weights are distributed with this repository.** They are large (the
-ViT checkpoints exceed GitHub's 100 MB per-file limit) and are all available
-upstream. Put whatever you download into `model_weights/`.
+Only the default RITM checkpoint is distributed with this repository. The
+others are large (the ViT checkpoints exceed GitHub's 100 MB per-file limit)
+and are all available upstream. Put whatever you download into
+`model_weights/`.
 
 | Backend | Where to get it |
 |---|---|
