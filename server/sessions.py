@@ -133,6 +133,8 @@ class Session:
                 {'x': int(k.coords[1]), 'y': int(k.coords[0]), 'positive': bool(k.is_positive)}
                 for k in c.clicker.clicks_list
             ],
+            'box': getattr(c.predictor, 'box', None),
+            'supports_box': c.supports_box,
             'object_count': int(c.object_count),
             'has_incomplete_object': bool(c.is_incomplete_mask),
             'can_undo': bool(c.states),
