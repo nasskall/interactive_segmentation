@@ -140,6 +140,7 @@ def item_out(r: sqlite3.Row) -> dict:
             'name': r['name'], 'width': r['width'], 'height': r['height'],
             'images': {role: f"/api/items/{r['id']}/image/{role}" for role in files},
             'assignee_id': r['assignee_id'], 'status': r['status'],
+            'annotation_count': r['annotation_count'] if 'annotation_count' in r.keys() else None,
             'created_at': r['created_at']}
 
 
@@ -393,6 +394,9 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             ' WHERE i2.project_id = ? AND a.labeller_id = u.id) annotations '
             'FROM users u JOIN items i ON i.assignee_id = u.id AND i.project_id = ? '
             'GROUP BY u.id ORDER BY u.display_name', (project_id, project_id))]
+        if user['role'] != 'admin':
+            # Labellers see the project totals but only their own row.
+            per_labeller = [r for r in per_labeller if r['user_id'] == user['id']]
         return {'items': sum(status.values()), 'by_status': status,
                 'by_labeller': per_labeller}
 
@@ -520,7 +524,9 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                    assignee_id: Optional[int] = None,
                    user=Depends(current_user), conn=Depends(get_db, scope='function')):
         get_project(conn, project_id, user)
-        sql, args = 'SELECT * FROM items WHERE project_id = ?', [project_id]
+        sql = ('SELECT items.*, (SELECT COUNT(*) FROM annotations a WHERE a.item_id = items.id) '
+               'annotation_count FROM items WHERE project_id = ?')
+        args = [project_id]
         if user['role'] != 'admin':
             sql, args = sql + ' AND assignee_id = ?', args + [user['id']]
         elif assignee_id is not None:

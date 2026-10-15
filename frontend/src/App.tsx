@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api, hasToken, setToken, setUnauthorizedHandler, type User } from './api';
 import { href, useRoute } from './lib';
-import { Login, ProjectItems, Projects, Setup } from './Pages';
+import { UsersPage } from './Admin';
+import { Login, ProjectPage, Projects, Setup } from './Pages';
 import QuickSegment from './QuickSegment';
 import Workspace from './Workspace';
 
@@ -44,7 +45,9 @@ export default function App() {
   else if (auth.state === 'loading') body = <div className="page muted">Loading…</div>;
   else if (auth.state === 'setup') body = <div className="page"><Setup onSignedIn={signedIn} /></div>;
   else if (!user) body = <div className="page"><Login onSignedIn={signedIn} /></div>;
-  else if (route.page === 'project') body = <ProjectItems projectId={route.id} me={user} />;
+  else if (route.page === 'project') {
+    body = <ProjectPage key={route.id} projectId={route.id} tab={route.tab} me={user} />;
+  } else if (route.page === 'users' && user.role === 'admin') body = <UsersPage me={user} />;
   else if (route.page === 'item') body = <Workspace key={route.id} itemId={route.id} me={user} />;
   else body = <Projects me={user} />;
 
@@ -53,7 +56,11 @@ export default function App() {
       <header className="topbar">
         <a className="brand" href={href.projects()}>Interactive Labelling</a>
         <nav>
-          <a className={route.page !== 'quick' ? 'active' : ''} href={href.projects()}>Projects</a>
+          <a className={!['quick', 'users'].includes(route.page) ? 'active' : ''}
+             href={href.projects()}>Projects</a>
+          {user?.role === 'admin' && (
+            <a className={route.page === 'users' ? 'active' : ''} href={href.users()}>Users</a>
+          )}
           <a className={route.page === 'quick' ? 'active' : ''} href={href.quick()}>Quick segment</a>
         </nav>
         <span className="grow" />

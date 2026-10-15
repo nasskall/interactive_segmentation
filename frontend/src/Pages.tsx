@@ -1,7 +1,9 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { AssignBar, ClassesEditor, NewProject, ProjectSettings, TeamProgress,
+         UploadPanel } from './Admin';
 import { api, setToken, TASK_LABELS, type Item, type ItemStatus, type Progress, type Project,
          type User } from './api';
-import { go, href } from './lib';
+import { go, href, type ProjectTab } from './lib';
 
 // ── sign-in ────────────────────────────────────────────────────────────────
 
@@ -116,15 +118,20 @@ export function Projects({ me }: { me: User }) {
       .catch((e) => setError(e.message));
   }, []);
 
+  const [creating, setCreating] = useState(false);
   return (
     <div className="page">
-      <h1>Projects</h1>
+      <div className="page-head">
+        <h1>Projects</h1>
+        {me.role === 'admin' && !creating && (
+          <button className="primary" onClick={() => setCreating(true)}>New project</button>
+        )}
+      </div>
+      {creating && <NewProject onCancel={() => setCreating(false)} />}
       {error && <p className="error-text">{error}</p>}
-      {projects?.length === 0 && (
+      {projects?.length === 0 && !creating && (
         <p className="muted">
-          {me.role === 'admin'
-            ? 'No projects yet. Project and user management screens come in the next phase; '
-              + 'for now create projects, classes and items from the API docs at /docs.'
+          {me.role === 'admin' ? 'No projects yet. Create the first one.'
             : 'Nothing is assigned to you yet.'}
         </p>
       )}
@@ -143,30 +150,56 @@ export function Projects({ me }: { me: User }) {
 }
 
 const STATUS_FILTERS: (ItemStatus | 'all')[] = ['all', 'todo', 'in_progress', 'done'];
+const TAB_LABELS: Record<ProjectTab, string> = {
+  items: 'Images', classes: 'Classes', team: 'Team', settings: 'Settings',
+};
 
-export function ProjectItems({ projectId, me }: { projectId: number; me: User }) {
+export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: ProjectTab; me: User }) {
+  const admin = me.role === 'admin';
   const [project, setProject] = useState<Project | null>(null);
   const [items, setItems] = useState<Item[] | null>(null);
   const [progress, setProgress] = useState<Progress>();
-  const [users, setUsers] = useState<Map<number, string>>(new Map());
+  const [users, setUsers] = useState<User[]>([]);
   const [filter, setFilter] = useState<ItemStatus | 'all'>('all');
+  const [assignee, setAssignee] = useState<string>('any');
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const reloadItems = useCallback(async () => {
+    const [its, pr] = await Promise.all([api.listItems(projectId), api.progress(projectId)]);
+    setItems(its);
+    setProgress(pr);
+    setSelected((sel) => new Set([...sel].filter((id) => its.some((i) => i.id === id))));
+  }, [projectId]);
+
   useEffect(() => {
-    Promise.all([api.getProject(projectId), api.listItems(projectId), api.progress(projectId)])
-      .then(([p, its, pr]) => { setProject(p); setItems(its); setProgress(pr); })
-      .catch((e) => setError(e.message));
-    if (me.role === 'admin') {
-      api.listUsers().then((us) => setUsers(new Map(us.map((u) => [u.id, u.display_name]))))
-        .catch(() => {});
-    }
-  }, [projectId, me.role]);
+    api.getProject(projectId).then(setProject).catch((e) => setError(e.message));
+    reloadItems().catch((e) => setError(e.message));
+    if (admin) api.listUsers().then(setUsers).catch(() => {});
+  }, [projectId, admin, reloadItems]);
 
   if (error) return <div className="page"><p className="error-text">{error}</p></div>;
   if (!project || !items) return <div className="page muted">Loading…</div>;
 
-  const shown = filter === 'all' ? items : items.filter((i) => i.status === filter);
+  const userName = new Map(users.map((u) => [u.id, u.display_name]));
+  const labellers = users.filter((u) => u.active);
+  const shown = items.filter((i) => (filter === 'all' || i.status === filter)
+    && (assignee === 'any' || (assignee === 'none' ? i.assignee_id === null
+                                                     : i.assignee_id === Number(assignee))));
   const next = items.find((i) => i.status !== 'done');
+  const allShownSelected = shown.length > 0 && shown.every((i) => selected.has(i.id));
+  const toggle = (id: number) => {
+    const next2 = new Set(selected);
+    if (next2.has(id)) next2.delete(id); else next2.add(id);
+    setSelected(next2);
+  };
+  const toggleAll = () => {
+    const next2 = new Set(selected);
+    for (const i of shown) { if (allShownSelected) next2.delete(i.id); else next2.add(i.id); }
+    setSelected(next2);
+  };
+  const tabs: ProjectTab[] = admin ? ['items', 'classes', 'team', 'settings'] : ['items'];
 
   return (
     <div className="page">
@@ -174,46 +207,94 @@ export function ProjectItems({ projectId, me }: { projectId: number; me: User })
       <div className="page-head">
         <div>
           <h1>{project.name}</h1>
-          <p className="muted">{TASK_LABELS[project.task_type]} · {items.length} items
-            {me.role !== 'admin' && ' assigned to you'}</p>
+          <p className="muted">{TASK_LABELS[project.task_type]} · {items.length} images
+            {!admin && ' assigned to you'}</p>
         </div>
         <button className="primary" disabled={!next} onClick={() => next && go(href.item(next.id))}>
-          {next ? 'Start labelling' : 'All done'}
+          {next ? 'Start labelling' : items.length ? 'All done' : 'No images yet'}
         </button>
       </div>
       <ProgressBar p={progress} />
-      {project.protocol && (
-        <details className="card"><summary>Protocol</summary>
-          <p className="protocol">{project.protocol}</p></details>
-      )}
-      <div className="segmented filter">
-        {STATUS_FILTERS.map((s) => (
-          <button key={s} className={filter === s ? 'active' : ''} onClick={() => setFilter(s)}>
-            {s === 'all' ? `All (${items.length})` : `${s.replace('_', ' ')} (${items.filter((i) => i.status === s).length})`}
-          </button>
-        ))}
-      </div>
-      <table className="items">
-        <thead>
-          <tr><th>#</th><th>Name</th><th>Size</th><th>Status</th>
-            {me.role === 'admin' && <th>Assigned to</th>}</tr>
-        </thead>
-        <tbody>
-          {shown.map((i) => (
-            <tr key={i.id} onClick={() => go(href.item(i.id))}>
-              <td className="muted">{i.id}</td>
-              <td><a href={href.item(i.id)}>{i.name}</a>{i.kind === 'pair' && <span className="muted small"> · pair</span>}</td>
-              <td className="muted">{i.width}×{i.height}</td>
-              <td><span className={`badge status-${i.status}`}>{i.status.replace('_', ' ')}</span></td>
-              {me.role === 'admin' && (
-                <td className="muted">{i.assignee_id === null ? '—'
-                  : users.get(i.assignee_id) ?? `user ${i.assignee_id}`}</td>
-              )}
-            </tr>
+
+      {tabs.length > 1 && (
+        <nav className="tabs">
+          {tabs.map((t) => (
+            <a key={t} href={href.project(project.id, t)} className={t === tab ? 'active' : ''}>
+              {TAB_LABELS[t]}
+            </a>
           ))}
-        </tbody>
-      </table>
-      {shown.length === 0 && <p className="muted">No items here.</p>}
+        </nav>
+      )}
+
+      {tab === 'classes' && admin && <ClassesEditor project={project} />}
+      {tab === 'settings' && admin && <ProjectSettings project={project} onSaved={setProject} />}
+      {tab === 'team' && admin && <TeamProgress progress={progress} items={items} />}
+
+      {(tab === 'items' || !admin) && (
+        <>
+          {!admin && project.protocol && (
+            <details className="card"><summary>Protocol</summary>
+              <p className="protocol">{project.protocol}</p></details>
+          )}
+          {admin && <UploadPanel project={project} onUploaded={() => { reloadItems(); }} />}
+          <div className="list-tools">
+            <div className="segmented filter">
+              {STATUS_FILTERS.map((st) => (
+                <button key={st} className={filter === st ? 'active' : ''} onClick={() => setFilter(st)}>
+                  {st === 'all' ? `All (${items.length})`
+                    : `${st.replace('_', ' ')} (${items.filter((i) => i.status === st).length})`}
+                </button>
+              ))}
+            </div>
+            {admin && (
+              <select value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+                <option value="any">Anyone</option>
+                <option value="none">Unassigned</option>
+                {users.map((u) => <option key={u.id} value={u.id}>{u.display_name}</option>)}
+              </select>
+            )}
+          </div>
+          {admin && (
+            <AssignBar project={project} selected={[...selected]} items={items} labellers={labellers}
+                       onDone={async (msg) => { setSelected(new Set()); await reloadItems(); setNotice(msg); }} />
+          )}
+          {notice && <p className="notice">{notice}</p>}
+          <table className="items">
+            <thead>
+              <tr>
+                {admin && <th className="check-cell"><input type="checkbox" checked={allShownSelected}
+                                                           onChange={toggleAll} title="Select all shown" /></th>}
+                <th>Name</th><th>Size</th><th>Labels</th><th>Status</th>
+                {admin && <th>Assigned to</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((i) => (
+                <tr key={i.id} className={selected.has(i.id) ? 'selected' : ''}
+                    onClick={() => (admin ? toggle(i.id) : go(href.item(i.id)))}>
+                  {admin && <td className="check-cell"><input type="checkbox" checked={selected.has(i.id)}
+                                                             onChange={() => toggle(i.id)}
+                                                             onClick={(e) => e.stopPropagation()} /></td>}
+                  <td><a href={href.item(i.id)} onClick={(e) => e.stopPropagation()}>{i.name}</a>
+                    {i.kind === 'pair' && <span className="muted small"> · pair</span>}</td>
+                  <td className="muted">{i.width}×{i.height}</td>
+                  <td className="muted">{i.annotation_count ?? '—'}</td>
+                  <td><span className={`badge status-${i.status}`}>{i.status.replace('_', ' ')}</span></td>
+                  {admin && (
+                    <td className="muted">{i.assignee_id === null ? '—'
+                      : userName.get(i.assignee_id) ?? `user ${i.assignee_id}`}</td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {shown.length === 0 && (
+            <p className="muted">{items.length === 0
+              ? (admin ? 'No images yet. Add some above.' : 'Nothing is assigned to you here.')
+              : 'No images match this filter.'}</p>
+          )}
+        </>
+      )}
     </div>
   );
 }

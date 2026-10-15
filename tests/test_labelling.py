@@ -394,6 +394,13 @@ def test_progress(admin):
            json={'class_id': car['id'], 'geometry': {'type': 'box', 'bbox': [1, 1, 5, 5]}})
     lab.ok('patch', f"/api/items/{items[0]['id']}", json={'status': 'done'})
 
+    other = _labeller(admin, 'lab2')
+    admin.ok('patch', f"/api/items/{items[2]['id']}", json={'assignee_id': other.user['id']})
+    assert len(admin.ok('get', f"/api/projects/{p['id']}/progress")['by_labeller']) == 2
+
+    listed = lab.ok('get', f"/api/projects/{p['id']}/items")
+    assert [i['annotation_count'] for i in listed] == [1, 0]
+
     prog = lab.ok('get', f"/api/projects/{p['id']}/progress")
     assert prog['items'] == 3
     assert prog['by_status'] == {'todo': 2, 'in_progress': 0, 'done': 1}
