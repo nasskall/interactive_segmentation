@@ -27,6 +27,8 @@ datasets/
 training_data/
 synthetic_test/
 experiments/
+# Labelling projects: database and uploaded images (server --data-dir).
+/data/
 
 # ── Logs and scratch output ────────────────────────────────────────────
 *.log

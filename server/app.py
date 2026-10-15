@@ -43,9 +43,17 @@ class LoadModelIn(BaseModel):
     checkpoint: str
 
 
-def create_app(manager: ModelManager, static_dir: Optional[Path] = None) -> FastAPI:
+def create_app(manager: ModelManager, static_dir: Optional[Path] = None,
+               data_dir: Optional[Path] = None) -> FastAPI:
+    """``data_dir`` enables labelling projects (database + uploaded images);
+    without it only the stateless segmentation endpoints are served."""
     app = FastAPI(title='Interactive Segmentation API', version='1.0')
     app.state.manager = manager
+    app.state.labelling = None
+    if data_dir is not None:
+        from server.labelling.api import build_router
+        router, app.state.labelling = build_router(data_dir, manager)
+        app.include_router(router)
 
     # The Vite dev server proxies /api, so CORS is only needed when the
     # frontend is hosted on a different origin.

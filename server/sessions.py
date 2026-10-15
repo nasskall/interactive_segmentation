@@ -227,6 +227,10 @@ class ModelManager:
             s.last_used = time.time()
             return s
 
+    def has_session(self, sid: str) -> bool:
+        with self.lock:
+            return sid in self._sessions
+
     def delete(self, sid: str) -> None:
         with self.lock:
             if self._sessions.pop(sid, None) is None:
