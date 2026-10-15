@@ -12,6 +12,31 @@ from isegm.adaptation import (
 )
 from isegm.adaptation.lora import collect_lora_state, load_lora_state
 
+# A candidate mask that covers more than this share of the image's border
+# pixels is treated as background (e.g. the skin surrounding a lesion).
+BACKGROUND_BORDER_FRACTION = 0.25
+
+
+def border_fraction(mask: np.ndarray) -> float:
+    """Share of the image's border pixels covered by ``mask``."""
+    border = np.concatenate([mask[0, :], mask[-1, :], mask[1:-1, 0], mask[1:-1, -1]])
+    return float(np.count_nonzero(border)) / border.size
+
+
+def pick_auto_mask(results: list) -> dict:
+    """Choose the foreground object among automatic-mask-generator results.
+
+    The largest mask is usually the background, which wraps around the
+    object and touches most of the image border. Prefer the largest mask
+    that does not; if every candidate does, fall back to the largest.
+    """
+    def area(m):
+        return m.get('area', int(m['segmentation'].sum()))
+
+    foreground = [m for m in results
+                  if border_fraction(m['segmentation']) <= BACKGROUND_BORDER_FRACTION]
+    return max(foreground or results, key=area)
+
 
 class InteractiveController:
     def __init__(self, net, device, predictor_params, update_image_callback, prob_thresh=0.5):
@@ -309,7 +334,7 @@ class InteractiveController:
 
     def _auto_mask_generate(self, mt: str) -> dict:
         """SAM / SAM2 automatic mask generator path. Picks the largest
-        returned mask (typical heuristic for a single dominant object)."""
+        mask that is not background (see ``pick_auto_mask``)."""
         try:
             if mt == 'sam':
                 from segment_anything import SamAutomaticMaskGenerator
@@ -331,9 +356,7 @@ class InteractiveController:
             return {'ok': False, 'mode_used': 'auto_mask',
                     'reason': 'no objects returned'}
 
-        # Largest mask by area is the standard heuristic for a dominant
-        # foreground object (e.g., a single skin lesion).
-        best = max(results, key=lambda m: m.get('area', m['segmentation'].sum()))
+        best = pick_auto_mask(results)
         prob_map = best['segmentation'].astype(np.float32)
 
         self.reset_last_object(update_image=False)

@@ -64,11 +64,15 @@ class SAMInteractivePredictor:
         point_coords = np.array(point_coords, dtype=np.float32)
         point_labels = np.array(point_labels, dtype=np.int32)
 
+        # A single click is ambiguous (part vs. whole object), so ask for
+        # three candidates and keep the best-scoring one; with more clicks
+        # the prompt is specific enough for a single mask. This follows the
+        # segment-anything usage guidance and gives far cleaner first masks.
         masks, scores, logits = self.sam_predictor.predict(
             point_coords=point_coords,
             point_labels=point_labels,
             mask_input=self.prev_logit,
-            multimask_output=False,
+            multimask_output=len(clicks_list) == 1,
         )
 
         best_idx = int(np.argmax(scores))
