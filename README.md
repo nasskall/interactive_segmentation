@@ -106,7 +106,12 @@ python -m server.main            # --cpu, --host, --port
 
 For frontend development, run `python -m server.main` and `npm run dev` in
 `frontend/` side by side. Vite serves the UI with hot reload on port 5173 and
-forwards `/api` to the backend.
+forwards `/api` to the backend: `http://127.0.0.1:8000` by default, or
+whatever `ISEG_API_URL` is set to (e.g. `http://192.168.1.50:8000`) when the
+backend runs on another machine.
+
+To reach the backend from other machines, bind it to all interfaces with
+`python -m server.main --host 0.0.0.0` and open `http://<server-ip>:8000`.
 
 Main endpoints (all under `/api`):
 
