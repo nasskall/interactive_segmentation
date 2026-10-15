@@ -33,6 +33,13 @@ class ClickIn(BaseModel):
     positive: bool = True
 
 
+class BoxIn(BaseModel):
+    x0: float = Field(ge=0)
+    y0: float = Field(ge=0)
+    x1: float = Field(ge=0)
+    y1: float = Field(ge=0)
+
+
 class SettingsIn(BaseModel):
     prob_thresh: Optional[float] = Field(default=None, gt=0.0, lt=1.0)
     use_zoom_in: Optional[bool] = None
@@ -120,6 +127,19 @@ def create_app(manager: ModelManager, static_dir: Optional[Path] = None,
             raise HTTPException(400, f'Click ({click.x}, {click.y}) outside {w}x{h} image')
         with manager.lock:
             s.controller.add_click(click.x, click.y, click.positive)
+            return s.state()
+
+    @app.post('/api/sessions/{sid}/box')
+    def set_box(sid: str, box: BoxIn):
+        """Box prompt for the current object (SAM / SAM 2 only)."""
+        s = manager.get(sid)
+        h, w = s.image.shape[:2]
+        if not (box.x0 < box.x1 <= w and box.y0 < box.y1 <= h):
+            raise HTTPException(400, f'Box must have x0 < x1 <= {w} and y0 < y1 <= {h}')
+        with manager.lock:
+            if not s.controller.supports_box:
+                raise HTTPException(422, 'Box prompts need a SAM or SAM 2 model')
+            s.controller.set_box(box.x0, box.y0, box.x1, box.y1)
             return s.state()
 
     @app.post('/api/sessions/{sid}/undo')

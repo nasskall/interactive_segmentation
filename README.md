@@ -124,6 +124,7 @@ Main endpoints (all under `/api`):
 | POST | `/sessions` | Upload an image (multipart `image`), returns session state |
 | GET | `/sessions/{id}/image` | Image that click coordinates refer to (longest side ≤ 2048) |
 | POST | `/sessions/{id}/clicks` | `{x, y, positive}` |
+| POST | `/sessions/{id}/box` | `{x0, y0, x1, y1}`: box prompt (SAM / SAM 2 only) |
 | POST | `/sessions/{id}/undo`, `/finish`, `/reset`, `/auto-segment` | Editing actions |
 | PATCH | `/sessions/{id}/settings` | `{prob_thresh, use_zoom_in}` |
 | GET | `/sessions/{id}/mask` | Label mask PNG at the original resolution |
@@ -134,12 +135,28 @@ as a data URL. Sessions live in memory, at most 16 at a time with the least
 recently used dropped first. All sessions share one model, and requests run
 one at a time.
 
-### Labelling projects (API only, for now)
+### Labelling projects
 
 The server also stores labelling projects for teams: users, projects, classes,
 images and annotations, kept in `data/` (a SQLite database plus the uploaded
-images; change it with `--data-dir`). The web UI for it is still to come; the
-API is usable from `/docs` today.
+images; change it with `--data-dir`). Labellers sign in to the web app, pick a
+project and work through their assigned images. Screens for creating projects,
+classes and users are still to come; until then admins use the API at `/docs`.
+The single-image tool above stays available, without signing in, under
+*Quick segment*.
+
+In the labelling workspace:
+
+| Task | Tools |
+|---|---|
+| Classification | Class buttons or keys 1–9 tag the image (one tag, or several for multi-label projects) |
+| Detection | Drag a box; or *Assist*: click the object and the model's mask is saved as a tight box |
+| Segmentation | *Assist*: click to add, right-click to remove, drag a box to prompt SAM, Enter saves; or draw a *Polygon* |
+| Change detection | The same tools on the *after* image, with *Before*/*After* and a *Compare* slider |
+
+The model encodes each image when it opens, so clicks respond at once
+afterwards. Wheel zooms, Space-drag or middle-drag pans, `[` `]` move between
+images, and *Mark done & next* jumps to the next unfinished one.
 
 - **Task types:** classification (single- or multi-label), object detection,
   semantic and instance segmentation, and change detection on before/after

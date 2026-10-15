@@ -127,3 +127,13 @@ def test_failed_load_keeps_previous_model(client, monkeypatch):
     new_sid = _upload(client)['session_id']
     r = client.post(f'/api/sessions/{new_sid}/clicks', json={'x': 80, 'y': 60, 'positive': True})
     assert r.status_code == 200
+
+
+def test_box_prompt_needs_sam(client):
+    s = _upload(client)
+    assert s['supports_box'] is False and s['box'] is None
+    sid = s['session_id']
+    r = client.post(f'/api/sessions/{sid}/box', json={'x0': 10, 'y0': 10, 'x1': 50, 'y1': 50})
+    assert r.status_code == 422
+    r = client.post(f'/api/sessions/{sid}/box', json={'x0': 50, 'y0': 10, 'x1': 10, 'y1': 50})
+    assert r.status_code == 400

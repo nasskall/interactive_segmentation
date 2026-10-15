@@ -606,8 +606,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             h, w = item['height'], item['width']
             mask = cv2.resize(mask.astype(np.uint8), (w, h),
                               interpolation=cv2.INTER_NEAREST).astype(bool)
-            # Start the next object from a clean slate.
-            session.controller.set_image(session.controller.image)
+            # Start the next object from a clean slate (keeps SAM's embedding).
+            session.controller.clear_objects()
         return mask
 
     # ── annotations ───────────────────────────────────────────────────────
