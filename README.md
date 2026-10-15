@@ -134,6 +134,31 @@ as a data URL. Sessions live in memory, at most 16 at a time with the least
 recently used dropped first. All sessions share one model, and requests run
 one at a time.
 
+### Labelling projects (API only, for now)
+
+The server also stores labelling projects for teams: users, projects, classes,
+images and annotations, kept in `data/` (a SQLite database plus the uploaded
+images; change it with `--data-dir`). The web UI for it is still to come; the
+API is usable from `/docs` today.
+
+- **Task types:** classification (single- or multi-label), object detection,
+  semantic and instance segmentation, and change detection on before/after
+  image pairs.
+- **Classes:** name, colour and label type (`tag`, `box`, `polygon` or
+  `mask`), limited to what the project's task type uses.
+- **Users:** admins manage projects and assign images; labellers see only the
+  images assigned to them. Each project has a written protocol, and every
+  annotation records who made it and whether a model assisted.
+- **Assisted labelling:** `POST /api/items/{id}/assist` opens a segmentation
+  session on a project image. Click with any loaded model, then save with
+  `{"class_id": ..., "from_session": "<session id>"}` and the mask is stored as
+  the class's label type (mask, bounding box or polygon) at full resolution.
+
+On first start with an empty `data/`, the server prints a one-time setup
+token. Create the first admin with it via `POST /api/auth/setup`; every other
+call needs the `Authorization: Bearer <token>` header returned by setup or
+`POST /api/auth/login`.
+
 ## Tests
 
 ```bash
