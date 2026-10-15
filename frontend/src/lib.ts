@@ -5,17 +5,27 @@ import { fetchImageUrl, type Rle } from './api';
 
 // ── routing ────────────────────────────────────────────────────────────────
 // Routes live in the URL hash so the backend's static file server needs no
-// rewrites: #/ projects · #/projects/3 items · #/items/12 workspace · #/quick
+// rewrites: #/ projects · #/projects/3[/classes|team|settings] · #/items/12
+// workspace · #/users · #/quick
+
+export type ProjectTab = 'items' | 'classes' | 'team' | 'settings';
 
 export type Route =
   | { page: 'projects' }
-  | { page: 'project'; id: number }
+  | { page: 'project'; id: number; tab: ProjectTab }
   | { page: 'item'; id: number }
+  | { page: 'users' }
   | { page: 'quick' };
+
+const TABS: ProjectTab[] = ['items', 'classes', 'team', 'settings'];
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  if (parts[0] === 'projects' && parts[1]) return { page: 'project', id: Number(parts[1]) };
+  if (parts[0] === 'projects' && parts[1]) {
+    const tab = TABS.find((t) => t === parts[2]) ?? 'items';
+    return { page: 'project', id: Number(parts[1]), tab };
+  }
+  if (parts[0] === 'users') return { page: 'users' };
   if (parts[0] === 'items' && parts[1]) return { page: 'item', id: Number(parts[1]) };
   if (parts[0] === 'quick') return { page: 'quick' };
   return { page: 'projects' };
@@ -23,7 +33,9 @@ export function parseRoute(hash: string): Route {
 
 export const href = {
   projects: () => '#/',
-  project: (id: number) => `#/projects/${id}`,
+  project: (id: number, tab: ProjectTab = 'items') =>
+    tab === 'items' ? `#/projects/${id}` : `#/projects/${id}/${tab}`,
+  users: () => '#/users',
   item: (id: number) => `#/items/${id}`,
   quick: () => '#/quick',
 };

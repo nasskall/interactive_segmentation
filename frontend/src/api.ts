@@ -78,6 +78,7 @@ export interface Item {
   images: Record<string, string>; // role -> URL ('image', or 'before' / 'after')
   assignee_id: number | null;
   status: ItemStatus;
+  annotation_count: number | null;
 }
 
 export interface Rle {
@@ -216,17 +217,52 @@ export const api = {
   logout: () => request<void>('/auth/logout', json('POST')),
   me: () => request<User>('/auth/me'),
   listUsers: () => request<User[]>('/users'),
+  createUser: (body: { username: string; password: string; display_name: string;
+                       role: User['role'] }) =>
+    request<User>('/users', json('POST', body)),
+  updateUser: (id: number, body: { display_name?: string; password?: string;
+                                   role?: User['role']; active?: boolean }) =>
+    request<User>(`/users/${id}`, json('PATCH', body)),
 
   // projects
   listProjects: () => request<Project[]>('/projects'),
   getProject: (id: number) => request<Project>(`/projects/${id}`),
+  createProject: (body: { name: string; task_type: TaskType; multi_label: boolean;
+                          protocol: string }) =>
+    request<Project>('/projects', json('POST', body)),
+  updateProject: (id: number, body: { name?: string; multi_label?: boolean; protocol?: string }) =>
+    request<Project>(`/projects/${id}`, json('PATCH', body)),
+  deleteProject: (id: number) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
   progress: (id: number) => request<Progress>(`/projects/${id}/progress`),
   listClasses: (projectId: number) => request<LabelClass[]>(`/projects/${projectId}/classes`),
+  createClass: (projectId: number, body: { name: string; color: string; label_type?: LabelType }) =>
+    request<LabelClass>(`/projects/${projectId}/classes`, json('POST', body)),
+  updateClass: (id: number, body: { name?: string; color?: string; position?: number }) =>
+    request<LabelClass>(`/classes/${id}`, json('PATCH', body)),
+  deleteClass: (id: number, force = false) =>
+    request<void>(`/classes/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
   listItems: (projectId: number, status?: ItemStatus) =>
     request<Item[]>(`/projects/${projectId}/items${status ? `?status=${status}` : ''}`),
 
+  uploadImages: (projectId: number, files: File[]) => {
+    const form = new FormData();
+    for (const f of files) form.append('images', f);
+    return request<Item[]>(`/projects/${projectId}/items`, { method: 'POST', body: form });
+  },
+  uploadPair: (projectId: number, before: File, after: File, name?: string) => {
+    const form = new FormData();
+    form.append('before', before);
+    form.append('after', after);
+    if (name) form.append('name', name);
+    return request<Item[]>(`/projects/${projectId}/items`, { method: 'POST', body: form });
+  },
+  assign: (projectId: number, userId: number | null, itemIds: number[]) =>
+    request<{ assigned: number }>(`/projects/${projectId}/assign`,
+                                  json('POST', { user_id: userId, item_ids: itemIds })),
+
   // items + annotations
   getItem: (id: number) => request<Item>(`/items/${id}`),
+  deleteItem: (id: number) => request<void>(`/items/${id}`, { method: 'DELETE' }),
   setItemStatus: (id: number, status: ItemStatus) =>
     request<Item>(`/items/${id}`, json('PATCH', { status })),
   startAssist: (itemId: number, image: string) =>

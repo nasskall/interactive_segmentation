@@ -139,9 +139,14 @@ one at a time.
 
 The server also stores labelling projects for teams: users, projects, classes,
 images and annotations, kept in `data/` (a SQLite database plus the uploaded
-images; change it with `--data-dir`). Labellers sign in to the web app, pick a
-project and work through their assigned images. Screens for creating projects,
-classes and users are still to come; until then admins use the API at `/docs`.
+images; change it with `--data-dir`). Everything is done in the web app:
+
+- **Admins** create projects (task type and protocol), define classes with
+  their colours and label types, upload images (or before/after pairs), assign
+  them to labellers one by one or spread evenly, follow progress per labeller
+  on the *Team* tab, and manage user accounts on the *Users* page.
+- **Labellers** sign in, pick a project and work through their assigned images.
+
 The single-image tool above stays available, without signing in, under
 *Quick segment*.
 
