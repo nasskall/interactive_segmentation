@@ -22,6 +22,7 @@ import numpy as np
 
 from interactive_demo.controller import InteractiveController
 from isegm.inference import utils
+from isegm.inference.predictors import get_predictor
 
 MODEL_TYPES = [
     'RITM', 'SimpleClick',
@@ -184,6 +185,11 @@ class ModelManager:
         path = self.weights_dir / checkpoint
         with self.lock:
             net = utils.load_model_by_type(str(path), model_label, self.device)
+            # Build a predictor before committing: a checkpoint can load while
+            # its predictor still fails (e.g. the backend package is missing),
+            # and switching anyway would break every session and new upload.
+            get_predictor(net, device=self.device,
+                          **predictor_params_for(model_label, 0.5, True))
             self.net = net
             self.model_label = model_label
             self.checkpoint = checkpoint

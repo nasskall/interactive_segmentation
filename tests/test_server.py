@@ -100,3 +100,30 @@ def test_errors(client):
     assert r.status_code == 400
     assert client.delete(f'/api/sessions/{sid}').status_code == 204
     assert client.get(f'/api/sessions/{sid}').status_code == 404
+
+
+def test_failed_load_keeps_previous_model(client, monkeypatch):
+    # Reproduces SAM being picked while segment_anything is missing: the
+    # checkpoint loads, but building its predictor raises.
+    from isegm.inference import utils
+    from isegm.inference.predictors import sam_predictor
+
+    class FakeSam:
+        _model_type = 'sam'
+
+    monkeypatch.setattr(utils, 'load_model_by_type', lambda *a, **k: FakeSam())
+    monkeypatch.setattr(sam_predictor, 'SAM_AVAILABLE', False)
+
+    sid = _upload(client)['session_id']
+    r = client.post('/api/models/load',
+                    json={'model_type': 'SAM - ViT-B', 'checkpoint': 'best_checkpoint_068.pth'})
+    assert r.status_code == 500
+    assert 'segment_anything is not installed' in r.json()['detail']
+    assert client.get('/api/models').json()['current']['model_type'] == 'RITM'
+
+    # Existing and new sessions keep working on the previous model.
+    r = client.post(f'/api/sessions/{sid}/clicks', json={'x': 80, 'y': 60, 'positive': True})
+    assert r.status_code == 200
+    new_sid = _upload(client)['session_id']
+    r = client.post(f'/api/sessions/{new_sid}/clicks', json={'x': 80, 'y': 60, 'positive': True})
+    assert r.status_code == 200
