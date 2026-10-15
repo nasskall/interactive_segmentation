@@ -86,6 +86,47 @@ python demo.py
 | Finish object | Space |
 | Partial finish | A |
 
+## Web app (REST API + React)
+
+The same segmentation is also available as a web app: a FastAPI backend
+(`server/`) and a React frontend (`frontend/`). It currently covers the core
+workflow (model selection, image upload, positive/negative clicks, undo, finish,
+auto-segment, mask download). LoRA adaptation and fine-tuning are still
+desktop-only.
+
+```bash
+python -m pip install fastapi "uvicorn[standard]" python-multipart
+
+# Build the frontend once (needs Node.js 18+)
+cd frontend && npm install && npm run build && cd ..
+
+# Serve API + built frontend at http://127.0.0.1:8000 (API docs at /docs)
+python -m server.main            # --cpu, --host, --port
+```
+
+For frontend development, run `python -m server.main` and `npm run dev` in
+`frontend/` side by side. Vite serves the UI with hot reload on port 5173 and
+forwards `/api` to the backend.
+
+Main endpoints (all under `/api`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/models` | Model types, checkpoints in `model_weights/`, active model |
+| POST | `/models/load` | `{model_type, checkpoint}`: swap the shared model |
+| POST | `/sessions` | Upload an image (multipart `image`), returns session state |
+| GET | `/sessions/{id}/image` | Image that click coordinates refer to (longest side ≤ 2048) |
+| POST | `/sessions/{id}/clicks` | `{x, y, positive}` |
+| POST | `/sessions/{id}/undo`, `/finish`, `/reset`, `/auto-segment` | Editing actions |
+| PATCH | `/sessions/{id}/settings` | `{prob_thresh, use_zoom_in}` |
+| GET | `/sessions/{id}/mask` | Label mask PNG at the original resolution |
+| DELETE | `/sessions/{id}` | Drop the session |
+
+Every editing call returns the full session state, including an RGBA overlay
+as a data URL. Sessions live in memory, at most 16 at a time with the least
+recently used dropped first. All sessions share one model, and requests run
+one at a time.
+
 ## Tests
 
 ```bash

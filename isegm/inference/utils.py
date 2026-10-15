@@ -4,7 +4,6 @@ from pathlib import Path
 import torch
 import numpy as np
 import sys, os
-from isegm.data.datasets import GrabCutDataset, BerkeleyDataset, DavisDataset, SBDEvaluationDataset, PascalVocDataset
 from isegm.utils.serialization import load_model
 
 
@@ -220,6 +219,10 @@ def load_model_by_type(checkpoint, model_type_label, device):
 
 
 def get_dataset(dataset_name, cfg):
+    # Imported lazily: only evaluation needs the dataset classes, and the
+    # interactive apps must start without them.
+    from isegm.data.datasets import GrabCutDataset, BerkeleyDataset, DavisDataset, SBDEvaluationDataset, PascalVocDataset
+
     if dataset_name == 'GrabCut':
         dataset = GrabCutDataset(cfg.GRABCUT_PATH)
     elif dataset_name == 'Berkeley':

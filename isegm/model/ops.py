@@ -43,8 +43,13 @@ class DistMaps(nn.Module):
         self.cpu_mode = cpu_mode
         self.use_disks = use_disks
         if self.cpu_mode:
-            from isegm.utils.cython_l import get_dist_maps #.cython #!
-            self._get_dist_maps = get_dist_maps
+            try:
+                from isegm.utils.cython_l import get_dist_maps #.cython #!
+                self._get_dist_maps = get_dist_maps
+            except ImportError:
+                # The Cython extension needs a C compiler to build; the torch
+                # path below computes the same maps.
+                self.cpu_mode = False
 
     def get_coord_features(self, points, batchsize, rows, cols):
         if self.cpu_mode:
