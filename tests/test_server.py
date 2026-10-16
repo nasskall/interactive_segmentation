@@ -186,10 +186,11 @@ def test_ensemble_loads_reuses_models_and_segments(client, monkeypatch, fresh_ri
     assert s['has_incomplete_object']
     assert set(s['ensemble_weights']) == {'RITM', 'SAM2 - Tiny'}
 
-    # Changing fusion re-uses both loaded models.
-    r = client.post('/api/models/load', json={'model_type': 'Ensemble', 'fusion': 'staple',
+    # Changing fusion re-uses both loaded models; STAPLE without TTA is the default.
+    r = client.post('/api/models/load', json={'model_type': 'Ensemble',
                                               'members': [RITM_MEMBER, SAM2_MEMBER]})
-    assert r.json()['current']['fusion'] == 'staple' and loads == ['SAM2 - Tiny']
+    cur = r.json()['current']
+    assert (cur['fusion'], cur['tta']) == ('staple', False) and loads == ['SAM2 - Tiny']
 
     # Back to a single model: no reload, no ensemble weights.
     r = client.post('/api/models/load', json=RITM_MEMBER)

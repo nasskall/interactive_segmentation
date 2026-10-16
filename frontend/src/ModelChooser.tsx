@@ -9,7 +9,7 @@ const FUSION_LABELS: Record<Fusion, string> = {
   mean: 'Average',
   weighted: 'Weighted by agreement',
   weighted_conf: 'Weighted + per-pixel confidence',
-  staple: 'STAPLE consensus',
+  staple: 'STAPLE consensus (recommended)',
 };
 
 const key = (m: ModelRef) => `${m.model_type}|${m.checkpoint}`;
@@ -27,7 +27,7 @@ export function describeModel(models: ModelInfo): string {
   if (c.model_type !== ENSEMBLE) return `${c.model_type} · ${c.checkpoint ?? ''} · ${models.device}`;
   const members = c.members ?? [];
   const names = members.map((m) => memberLabel(m, members)).join(' + ');
-  return `Ensemble (${names}) · ${FUSION_LABELS[c.fusion ?? 'weighted']}`
+  return `Ensemble (${names}) · ${FUSION_LABELS[c.fusion ?? 'staple']}`
     + `${c.tta ? ' · TTA' : ''} · ${models.device}`;
 }
 
@@ -46,8 +46,8 @@ export default function ModelChooser({ models, busy, buttonLabel, onLoad }: {
   // Until an ensemble has been loaded, offer every available model.
   const [members, setMembers] = useState<Set<string>>(() => new Set(
     (cur.members ?? models.ensemble.candidates.slice(0, models.ensemble.max_members)).map(key)));
-  const [fusion, setFusion] = useState<Fusion>('weighted');
-  const [tta, setTta] = useState(true);
+  const [fusion, setFusion] = useState<Fusion>('staple');
+  const [tta, setTta] = useState(false);
 
   // Follow whatever the server reports as loaded.
   useEffect(() => {

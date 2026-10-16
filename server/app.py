@@ -56,8 +56,8 @@ class LoadModelIn(BaseModel):
     model_type: str
     checkpoint: Optional[str] = None
     members: Optional[list[EnsembleMemberIn]] = None
-    fusion: str = 'weighted'
-    tta: bool = True
+    fusion: str = 'staple'
+    tta: bool = False
 
 
 def create_app(manager: ModelManager, static_dir: Optional[Path] = None,

@@ -42,8 +42,8 @@ SAM_FAMILY = ('sam', 'sam2')
 
 @dataclass
 class EnsembleConfig:
-    fusion: str = 'weighted'
-    tta: bool = True
+    fusion: str = 'staple'      # best on the COCO click benchmark
+    tta: bool = False           # no consistent gain there, and slower
     sharpness: float = 8.0      # softmax temperature for the reliability weights
     jitter: float = 0.01        # SAM prompt jitter, fraction of the longest side
     click_radius: int = 3       # disc used to score / pin clicks, in pixels
