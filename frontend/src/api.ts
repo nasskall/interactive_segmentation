@@ -109,6 +109,17 @@ export interface Progress {
                  annotations: number }[];
 }
 
+export type ExportFormat = 'coco' | 'masks' | 'yolo' | 'csv';
+
+// Mirrors TASK_FORMATS in server/labelling/export.py.
+export const TASK_FORMATS: Record<TaskType, ExportFormat[]> = {
+  classification: ['csv'],
+  detection: ['coco', 'yolo', 'csv'],
+  semantic_segmentation: ['coco', 'masks', 'yolo', 'csv'],
+  instance_segmentation: ['coco', 'masks', 'yolo', 'csv'],
+  change_detection: ['coco', 'masks', 'csv'],
+};
+
 export const TASK_LABELS: Record<TaskType, string> = {
   classification: 'Classification',
   detection: 'Object detection',
@@ -275,4 +286,14 @@ export const api = {
   updateAnnotation: (id: number, body: { class_id?: number; geometry?: Geometry }) =>
     request<Annotation>(`/annotations/${id}`, json('PATCH', body)),
   deleteAnnotation: (id: number) => request<void>(`/annotations/${id}`, { method: 'DELETE' }),
+
+  // exports
+  exportProject: async (projectId: number, format: ExportFormat,
+                        opts: { status: ItemStatus | 'all'; include_images: boolean }) => {
+    const q = new URLSearchParams({ format, status: opts.status,
+                                    include_images: String(opts.include_images) });
+    const res = await raw(`/projects/${projectId}/export?${q}`);
+    const name = /filename="?([^";]+)"?/.exec(res.headers.get('Content-Disposition') ?? '')?.[1];
+    return { blob: await res.blob(), filename: name ?? `export.${format === 'csv' ? 'csv' : 'zip'}` };
+  },
 };

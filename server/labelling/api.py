@@ -17,8 +17,10 @@ original resolution, then clears the session for the next object.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import sqlite3
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Literal, Optional
@@ -26,10 +28,12 @@ from typing import Iterator, Literal, Optional
 import cv2
 import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
-from server.labelling import auth, geometry
+from server.labelling import auth, export, geometry
 from server.labelling.db import (ALLOWED_LABEL_TYPES, ITEM_STATUSES, ROLES, TASK_TYPES,
                                  Database, now)
 from server.labelling.storage import ImageError, ImageStore, decode, extension
@@ -685,5 +689,50 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         get_annotation(conn, ann_id, user)
         conn.execute('DELETE FROM annotations WHERE id = ?', (ann_id,))
         return Response(status_code=204)
+
+    # ── exports ───────────────────────────────────────────────────────────
+
+    @router.get('/projects/{project_id}/export')
+    def export_project(project_id: int, format: Literal[export.FORMATS],
+                       status: Literal[('all', *ITEM_STATUSES)] = 'all',
+                       include_images: bool = True,
+                       user=Depends(admin_user), conn=Depends(get_db, scope='function')):
+        """Download the project's labels: a CSV file, or a zip holding COCO
+        JSON, PNG masks or YOLO labels (plus the images unless
+        ``include_images`` is false). ``status`` limits it to items with that
+        status."""
+        p = get_project(conn, project_id, user)
+        if format not in export.TASK_FORMATS[p['task_type']]:
+            raise HTTPException(400, f"{p['task_type']} projects export as "
+                                     f"{', '.join(export.TASK_FORMATS[p['task_type']])}")
+        sql, args = 'SELECT * FROM items WHERE project_id = ?', [project_id]
+        if status != 'all':
+            sql, args = sql + ' AND status = ?', args + [status]
+        items = [{**dict(r), 'files': json.loads(r['files'])}
+                 for r in conn.execute(sql + ' ORDER BY id', args)]
+        annotations: dict[int, list[dict]] = {}
+        for r in conn.execute('SELECT a.* FROM annotations a JOIN items i ON i.id = a.item_id '
+                              'WHERE i.project_id = ? ORDER BY a.id', (project_id,)):
+            annotations.setdefault(r['item_id'], []).append(
+                {**dict(r), 'geometry': json.loads(r['geometry'])})
+        data = export.ExportData(
+            project=dict(p),
+            classes=[dict(r) for r in conn.execute(
+                'SELECT * FROM classes WHERE project_id = ? ORDER BY position, id', (project_id,))],
+            items=items, annotations=annotations,
+            users={r['id']: r['display_name'] for r in conn.execute('SELECT * FROM users')})
+        stem = f"{export.safe_name(p['name'])}_{format}"
+        if format == 'csv':
+            return Response(export.export_csv(data), media_type='text/csv',
+                            headers={'Content-Disposition': f'attachment; filename="{stem}.csv"'})
+        fd, tmp = tempfile.mkstemp(suffix='.zip')
+        os.close(fd)
+        try:
+            export.write_zip(Path(tmp), format, data, ctx.images, include_images)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+        return FileResponse(tmp, media_type='application/zip', filename=f'{stem}.zip',
+                            background=BackgroundTask(os.unlink, tmp))
 
     return router, ctx

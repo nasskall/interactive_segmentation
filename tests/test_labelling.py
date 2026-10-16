@@ -3,6 +3,11 @@ and SAM/RITM-assisted labelling (against the real RITM checkpoint)."""
 
 from __future__ import annotations
 
+import csv
+import io
+import json
+import zipfile
+
 import cv2
 import numpy as np
 import pytest
@@ -489,3 +494,159 @@ def test_rle_matches_pycocotools():
     theirs = mask_utils.frPyObjects(ours, *ours['size'])
     np.testing.assert_array_equal(mask_utils.decode(theirs).astype(bool), mask)
     assert mask_utils.area(theirs) == mask.sum()
+
+
+# ── exports ───────────────────────────────────────────────────────────────
+
+def _zip(admin: Api, project_id, **params) -> zipfile.ZipFile:
+    r = admin.get(f'/api/projects/{project_id}/export', params=params)
+    assert r.status_code == 200, r.text
+    assert r.headers['content-type'] == 'application/zip'
+    return zipfile.ZipFile(io.BytesIO(r.content))
+
+
+def _png_array(data: bytes) -> np.ndarray:
+    return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+
+
+def _instance_project(admin: Api):
+    """Two classes; item 1 has a mask and a polygon, item 2 has nothing."""
+    p = _project(admin, 'instance_segmentation', name='cells')
+    cell = _class(admin, p['id'], 'cell', '#ff0000', label_type='mask')
+    nuc = _class(admin, p['id'], 'nucleus', '#00ff00', label_type='polygon')
+    items = _items(admin, p['id'], n=2)
+    mask = np.zeros((120, 160), bool)
+    mask[10:50, 20:80] = True
+    admin.ok('post', f"/api/items/{items[0]['id']}/annotations", 201, json={
+        'class_id': cell['id'], 'geometry': {'type': 'mask', 'rle': geometry.rle_encode(mask)}})
+    admin.ok('post', f"/api/items/{items[0]['id']}/annotations", 201, json={
+        'class_id': nuc['id'],
+        'geometry': {'type': 'polygon', 'points': [[100, 60], [140, 60], [140, 100], [100, 100]]}})
+    return p, items, mask
+
+
+def test_export_coco_loads_in_pycocotools(admin, tmp_path):
+    coco_api = pytest.importorskip('pycocotools.coco')
+    p, items, mask = _instance_project(admin)
+    zf = _zip(admin, p['id'], format='coco')
+    assert {'annotations.json', f"images/{items[0]['id']}_img0.png",
+            f"images/{items[1]['id']}_img1.png"} <= set(zf.namelist())
+    (tmp_path / 'ann.json').write_bytes(zf.read('annotations.json'))
+    coco = coco_api.COCO(str(tmp_path / 'ann.json'))
+    assert [c['name'] for c in coco.loadCats(coco.getCatIds())] == ['cell', 'nucleus']
+    assert sorted(coco.getImgIds()) == sorted(i['id'] for i in items)
+    anns = coco.loadAnns(coco.getAnnIds(imgIds=[items[0]['id']]))
+    assert [a['category_id'] for a in anns] == [1, 2]
+    np.testing.assert_array_equal(coco.annToMask(anns[0]).astype(bool), mask)
+    assert anns[0]['bbox'] == [20, 10, 60, 40] and anns[0]['area'] == mask.sum()
+    assert anns[1]['bbox'] == [100, 60, 40, 40] and anns[1]['area'] == 1600
+    assert coco.annToMask(anns[1])[80, 120] == 1
+
+    no_images = _zip(admin, p['id'], format='coco', include_images='false')
+    assert no_images.namelist() == ['annotations.json']
+
+
+def test_export_status_filter(admin):
+    p, items, _ = _instance_project(admin)
+    admin.ok('patch', f"/api/items/{items[0]['id']}", json={'status': 'done'})
+    data = json.loads(_zip(admin, p['id'], format='coco', status='done').read('annotations.json'))
+    assert [i['id'] for i in data['images']] == [items[0]['id']]
+    assert len(data['annotations']) == 2
+
+
+def test_export_masks(admin):
+    from PIL import Image
+    p, items, mask = _instance_project(admin)
+    zf = _zip(admin, p['id'], format='masks', include_images='false')
+    stem = f"{items[0]['id']}_img0"
+    cls_png = Image.open(io.BytesIO(zf.read(f'masks/{stem}.png')))
+    assert cls_png.mode == 'P' and cls_png.getpalette()[3:9] == [255, 0, 0, 0, 255, 0]
+    cls_map = np.array(cls_png)
+    assert cls_map[30, 50] == 1 and cls_map[80, 120] == 2 and cls_map[110, 5] == 0
+    assert (cls_map == 1).sum() == mask.sum()
+    inst = _png_array(zf.read(f'instances/{stem}.png'))
+    assert inst.dtype == np.uint16 and set(np.unique(inst)) == {0, 1, 2}
+    empty = np.array(Image.open(io.BytesIO(zf.read(f"masks/{items[1]['id']}_img1.png"))))
+    assert not empty.any()
+    assert zf.read('classes.csv').decode().splitlines() == [
+        'index,name,color', '0,background,#000000', '1,cell,#ff0000', '2,nucleus,#00ff00']
+
+
+def test_export_yolo_detection_and_segmentation(admin):
+    p = _project(admin, 'detection')
+    _class(admin, p['id'], 'car')
+    person = _class(admin, p['id'], 'person')
+    item = _items(admin, p['id'])[0]
+    admin.ok('post', f"/api/items/{item['id']}/annotations", 201, json={
+        'class_id': person['id'], 'geometry': {'type': 'box', 'bbox': [40, 30, 80, 60]}})
+    zf = _zip(admin, p['id'], format='yolo')
+    assert f"images/{item['id']}_img0.png" in zf.namelist()
+    assert zf.read(f"labels/{item['id']}_img0.txt").decode() == \
+        '1 0.500000 0.500000 0.500000 0.500000\n'
+    data_yaml = zf.read('data.yaml').decode()
+    assert '0: "car"' in data_yaml and '1: "person"' in data_yaml
+
+    p, items, _ = _instance_project(admin)
+    zf = _zip(admin, p['id'], format='yolo')
+    lines = zf.read(f"labels/{items[0]['id']}_img0.txt").decode().splitlines()
+    assert [ln.split()[0] for ln in lines] == ['0', '1']
+    xs = [float(v) for v in lines[0].split()[1::2]]
+    ys = [float(v) for v in lines[0].split()[2::2]]
+    assert min(xs) == pytest.approx(20 / 160, abs=1e-6)
+    assert max(ys) == pytest.approx(49 / 120, abs=1e-6)
+    assert zf.read(f"labels/{items[1]['id']}_img1.txt") == b''
+
+
+def test_export_csv(admin):
+    p = _project(admin, 'classification', multi_label=True)
+    cat = _class(admin, p['id'], 'cat')
+    dog = _class(admin, p['id'], 'dog')
+    items = _items(admin, p['id'], n=2)
+    for c in (cat, dog):
+        admin.ok('post', f"/api/items/{items[0]['id']}/annotations", 201, json={'class_id': c['id']})
+    r = admin.get(f"/api/projects/{p['id']}/export", params={'format': 'csv'})
+    assert r.status_code == 200 and r.headers['content-type'].startswith('text/csv')
+    assert 'classification_csv.csv' in r.headers['content-disposition']
+    rows = list(csv.DictReader(io.StringIO(r.text)))
+    assert [(int(x['item_id']), x['class'], x['labeller']) for x in rows] == [
+        (items[0]['id'], 'cat', 'Admin'), (items[0]['id'], 'dog', 'Admin'),
+        (items[1]['id'], '', '')]
+    assert rows[0]['bbox_x'] == '' and rows[0]['files'] == f"{items[0]['id']}_img0.png"
+
+
+def test_export_change_detection_pairs(admin):
+    p = _project(admin, 'change_detection')
+    cls = _class(admin, p['id'], 'new building', label_type='box')
+    item = admin.ok('post', f"/api/projects/{p['id']}/items", 201, files=[
+        ('before', ('site_before.png', _png(), 'image/png')),
+        ('after', ('site_after.png', _png(color=(0, 200, 0)), 'image/png'))])[0]
+    admin.ok('post', f"/api/items/{item['id']}/annotations", 201, json={
+        'class_id': cls['id'], 'geometry': {'type': 'box', 'bbox': [10, 10, 20, 30]}})
+    zf = _zip(admin, p['id'], format='coco')
+    stem = f"{item['id']}_{item['name']}"
+    assert {f'images/{stem}_before.png', f'images/{stem}_after.png'} <= set(zf.namelist())
+    image = json.loads(zf.read('annotations.json'))['images'][0]
+    assert image['file_name'] == f'{stem}_after.png'
+    assert image['before_file_name'] == f'{stem}_before.png'
+    from PIL import Image
+    masks = np.array(Image.open(io.BytesIO(
+        _zip(admin, p['id'], format='masks').read(f'masks/{stem}.png'))))
+    assert masks[10:40, 10:30].all() and masks.sum() == 600
+
+
+def test_export_rules(admin):
+    p = _project(admin, 'classification')
+    for fmt in ('coco', 'masks', 'yolo'):
+        r = admin.get(f"/api/projects/{p['id']}/export", params={'format': fmt})
+        assert r.status_code == 400 and 'csv' in r.json()['detail']
+    det = _project(admin, 'detection')
+    assert admin.get(f"/api/projects/{det['id']}/export",
+                     params={'format': 'masks'}).status_code == 400
+    assert admin.get(f"/api/projects/{det['id']}/export",
+                     params={'format': 'pdf'}).status_code == 422
+    lab = _labeller(admin)
+    item = _items(admin, det['id'])[0]
+    admin.ok('post', f"/api/projects/{det['id']}/assign",
+             json={'user_id': lab.user['id'], 'item_ids': [item['id']]})
+    assert lab.get(f"/api/projects/{det['id']}/export",
+                   params={'format': 'csv'}).status_code == 403
