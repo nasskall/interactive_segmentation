@@ -52,6 +52,21 @@ class OnlineAdaptConfig:
     # accepted mask instead (the earlier behaviour, kept for comparison).
     use_recorded_clicks: bool = True
 
+    @classmethod
+    def for_model(cls, model_type: str) -> 'OnlineAdaptConfig':
+        """Defaults tuned for ``model_type`` (see MODEL_DEFAULTS)."""
+        return cls(**MODEL_DEFAULTS.get(model_type, {}))
+
+
+# Per-model overrides of OnlineAdaptConfig, from tools/click_benchmark.py
+# --sweep-lr on COCO128-seg people (8 session objects, 12 held out):
+#   sam: lr 2e-4 x 30 steps was the only setting no worse than the
+#        unadapted model on any measure (NoC@90 7.33 -> 5.33, mIoU@1
+#        0.33 -> 0.51); the old 5e-4 x 90 steps made it worse (NoC@90 9.08).
+MODEL_DEFAULTS: dict[str, dict] = {
+    'sam': {'lr': 2e-4, 'steps': 30},
+}
+
 
 class OnlineAdapter:
     """Owns the LoRA-injected model + a stack of pre-update snapshots."""
