@@ -1,7 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import functools
 
-import mmcv
 import numpy as np
 import torch.nn.functional as F
 
@@ -18,7 +17,8 @@ def get_class_weight(class_weight):
         if class_weight.endswith('.npy'):
             class_weight = np.load(class_weight)
         else:
-            # pkl, json or yaml
+            # pkl, json or yaml; mmcv is only needed for this path.
+            import mmcv
             class_weight = mmcv.load(class_weight)
 
     return class_weight
