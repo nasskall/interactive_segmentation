@@ -69,9 +69,17 @@ class OnlineAdaptConfig:
 #        (NoC@90 6.50, mIoU@1 0.577 -> 0.547), whereas 5e-4 degraded with
 #        repeated presses (mIoU@1 0.48 after 90 steps). Applies to every RITM
 #        checkpoint; only the lesion one was swept.
+#   sam2: lr 2e-4 x 30 steps gave the best NoC@85/90 (3.08/5.42 -> 2.67/4.50,
+#        mIoU@1 0.62 -> 0.72); 5e-4 x 30 reached only NoC@90 4.92.
+#   simpleclick: adaptation never clearly helped (sessions are short, about
+#        2 clicks per object, so it over-fits); 5e-4 x 30 made it much worse
+#        (NoC@90 3.75 -> 6.83). lr 1e-4 x 10 steps is the only neutral setting
+#        (NoC@90 3.67), so a press barely changes the model.
 MODEL_DEFAULTS: dict[str, dict] = {
     'sam': {'lr': 2e-4, 'steps': 30},
+    'sam2': {'lr': 2e-4, 'steps': 30},
     'ritm': {'lr': 2e-4, 'steps': 30},
+    'simpleclick': {'lr': 1e-4, 'steps': 10},
 }
 
 
