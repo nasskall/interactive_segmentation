@@ -248,10 +248,11 @@ def test_online_adapter_can_still_sample_clicks(fresh_ritm, device, synthetic_pa
 
 
 def test_online_adapt_defaults_per_model():
-    assert (OnlineAdaptConfig.for_model('sam').lr, OnlineAdaptConfig.for_model('sam').steps) \
-        == (2e-4, 30)
+    for mt in ('sam', 'ritm'):
+        cfg = OnlineAdaptConfig.for_model(mt)
+        assert (cfg.lr, cfg.steps) == (2e-4, 30), mt
     # Models without tuned settings keep the general defaults.
-    for mt in ('ritm', 'sam2', 'simpleclick', 'unknown'):
+    for mt in ('sam2', 'simpleclick', 'unknown'):
         assert OnlineAdaptConfig.for_model(mt) == OnlineAdaptConfig()
 
 

@@ -63,8 +63,15 @@ class OnlineAdaptConfig:
 #   sam: lr 2e-4 x 30 steps was the only setting no worse than the
 #        unadapted model on any measure (NoC@90 7.33 -> 5.33, mIoU@1
 #        0.33 -> 0.51); the old 5e-4 x 90 steps made it worse (NoC@90 9.08).
+#   ritm: (lesion checkpoint) no setting was a clear win on photos of people.
+#        lr 2e-4 is the safe choice: one 30-step press is about neutral
+#        (NoC@90 7.42 -> 7.33), three reach the best measured setting
+#        (NoC@90 6.50, mIoU@1 0.577 -> 0.547), whereas 5e-4 degraded with
+#        repeated presses (mIoU@1 0.48 after 90 steps). Applies to every RITM
+#        checkpoint; only the lesion one was swept.
 MODEL_DEFAULTS: dict[str, dict] = {
     'sam': {'lr': 2e-4, 'steps': 30},
+    'ritm': {'lr': 2e-4, 'steps': 30},
 }
 
 
