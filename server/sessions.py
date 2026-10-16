@@ -266,8 +266,8 @@ class ModelManager:
             self.ensemble_members = None
             self._switch(net, model_label, checkpoint)
 
-    def load_ensemble(self, members: list[tuple[str, str]], fusion: str = 'weighted',
-                      tta: bool = True) -> None:
+    def load_ensemble(self, members: list[tuple[str, str]], fusion: str = 'staple',
+                      tta: bool = False) -> None:
         """Fuse 2..MAX_ENSEMBLE_MEMBERS models, given as (model type,
         checkpoint) pairs; see isegm.inference.predictors.ensemble."""
         if not 2 <= len(members) <= MAX_ENSEMBLE_MEMBERS:
