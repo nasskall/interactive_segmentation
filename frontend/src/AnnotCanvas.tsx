@@ -20,6 +20,7 @@ interface Props {
   session: SessionState | null;
   sessionOverlay: HTMLImageElement | null;
   tool: Tool;
+  fixedBox?: [number, number] | null;  // box tool: width, height placed by a click
   drawColor: string;
   busy: boolean;
   onAssistClick: (x: number, y: number, positive: boolean) => void;
@@ -67,6 +68,15 @@ export default function AnnotCanvas(p: Props) {
     setDraft([]);
   }, [p.image, p.width, p.height]);
   useEffect(() => { setDraft([]); }, [p.tool]);
+
+  // Box tool, fixed size: the box a click at (x, y) places, centred on the
+  // click and shifted to stay inside the image.
+  const fixedBoxAt = useCallback((x: number, y: number): [number, number, number, number] | null => {
+    if (p.tool !== 'box' || !p.fixedBox) return null;
+    const w = Math.min(p.fixedBox[0], p.width), h = Math.min(p.fixedBox[1], p.height);
+    return [Math.min(Math.max(x - w / 2, 0), p.width - w),
+            Math.min(Math.max(y - h / 2, 0), p.height - h), w, h];
+  }, [p.tool, p.fixedBox, p.width, p.height]);
 
   const masks = useMemo(() => {
     const out = new Map<number, HTMLCanvasElement>();
@@ -170,8 +180,18 @@ export default function AnnotCanvas(p: Props) {
       }
     }
 
+    // Fixed-size box under the cursor.
+    const preview = hover && !drag ? fixedBoxAt(hover[0], hover[1]) : null;
+    if (preview) {
+      ctx.setLineDash([6 * u, 4 * u]);
+      ctx.strokeStyle = p.drawColor;
+      ctx.lineWidth = 2 * u;
+      ctx.strokeRect(...preview);
+      ctx.setLineDash([]);
+    }
+
     // Shape being dragged.
-    if (drag && drag.moved && !drag.pan) {
+    if (drag && drag.moved && !drag.pan && !(p.tool === 'box' && p.fixedBox)) {
       ctx.setLineDash([6 * u, 4 * u]);
       ctx.strokeStyle = p.tool === 'assist' ? '#facc15' : p.drawColor;
       ctx.lineWidth = 2 * u;
@@ -195,7 +215,7 @@ export default function AnnotCanvas(p: Props) {
         ctx.fill();
       });
     }
-  }, [p, masks, drag, draft, hover, unit, view, fit]);
+  }, [p, masks, drag, draft, hover, unit, view, fit, fixedBoxAt]);
 
   // ── coordinates ─────────────────────────────────────────────────────────
   const toImage = (e: { clientX: number; clientY: number }): [number, number] => {
@@ -242,7 +262,9 @@ export default function AnnotCanvas(p: Props) {
 
   const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
     const pt = toImage(e);
-    if (p.tool === 'polygon') setHover(clampPt(pt));
+    if (p.tool === 'polygon' || (p.tool === 'box' && p.fixedBox)) {
+      setHover(inside(pt) || p.tool === 'polygon' ? clampPt(pt) : null);
+    }
     if (!drag) return;
     const moved = drag.moved || Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > DRAG_THRESHOLD;
     if (drag.pan) {
@@ -266,6 +288,9 @@ export default function AnnotCanvas(p: Props) {
     if (p.tool === 'assist') {
       if (isBox) p.onAssistBox(x0, y0, x1, y1);
       else if (!d.moved && inside([x, y])) p.onAssistClick(x, y, true);
+    } else if (p.tool === 'box' && p.fixedBox) {
+      const placed = !d.moved && inside([x, y]) ? fixedBoxAt(x, y) : null;
+      if (placed) p.onBox(placed);
     } else if (p.tool === 'box') {
       if (isBox) p.onBox([x0, y0, x1 - x0, y1 - y0]);
     } else if (p.tool === 'polygon' && !d.moved && inside([x, y])) {

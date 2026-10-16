@@ -8,7 +8,7 @@ import { go, href, useAuthedImage, useImage } from './lib';
 const TOOL_INFO: Record<Tool, { label: string; key: string; help: string }> = {
   assist: { label: 'Assist', key: 'a',
             help: 'Click to add, right-click to remove, drag a box (SAM). Enter saves.' },
-  box: { label: 'Box', key: 'r', help: 'Drag to draw a box.' },
+  box: { label: 'Box', key: 'r', help: 'Drag to draw a box, or tick Fixed size and click.' },
   polygon: { label: 'Polygon', key: 'p',
              help: 'Click to add points; click the first point or press Enter to close. '
                    + 'Backspace removes a point.' },
@@ -38,6 +38,29 @@ function toolsFor(project: Project, classes: LabelClass[]): Tool[] {
 // The tool last used in each project, kept while moving between its items.
 const lastTool = new Map<number, Tool>();
 
+// Fixed-size boxes: one setting per project, remembered in this browser.
+interface FixedBox { on: boolean; w: number; h: number }
+const DEFAULT_FIXED_BOX: FixedBox = { on: false, w: 64, h: 64 };
+const fixedBoxKey = (projectId: number) => `iseg.fixedBox.${projectId}`;
+
+function loadFixedBox(projectId: number): FixedBox {
+  try {
+    const v = JSON.parse(localStorage.getItem(fixedBoxKey(projectId)) ?? 'null');
+    if (v && typeof v.on === 'boolean' && v.w >= 1 && v.h >= 1) return { on: v.on, w: v.w, h: v.h };
+  } catch {
+    /* storage unavailable or bad value */
+  }
+  return DEFAULT_FIXED_BOX;
+}
+
+function saveFixedBox(projectId: number, v: FixedBox) {
+  try {
+    localStorage.setItem(fixedBoxKey(projectId), JSON.stringify(v));
+  } catch {
+    /* storage unavailable: keep it for this page only */
+  }
+}
+
 const describe = (g: Geometry) =>
   g.type === 'box' ? `box ${Math.round(g.bbox[2])}×${Math.round(g.bbox[3])}`
     : g.type === 'polygon' ? `polygon · ${g.points.length} pts`
@@ -62,6 +85,7 @@ export default function Workspace({ itemId, me }: Props) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
   const [opacity, setOpacity] = useState(0.5);
+  const [fixedBox, setFixedBox] = useState<FixedBox>(DEFAULT_FIXED_BOX);
   const [role, setRole] = useState('image');      // which image of the item is shown
   const [swipe, setSwipe] = useState<number | null>(null);
   const [sessions, setSessions] = useState<Record<string, SessionState>>({});
@@ -90,6 +114,7 @@ export default function Workspace({ itemId, me }: Props) {
       if (!live) return;
       setItem(it);
       setProject(proj);
+      setFixedBox(loadFixedBox(proj.id));
       setClasses(cls);
       setAnnotations(anns);
       setSiblings(items);
@@ -288,6 +313,12 @@ export default function Workspace({ itemId, me }: Props) {
     }
   };
 
+  const updateFixedBox = (patch: Partial<FixedBox>) => {
+    const next = { ...fixedBox, ...patch };
+    setFixedBox(next);
+    if (project) saveFixedBox(project.id, next);
+  };
+
   const pickTool = (t: Tool) => {
     setTool(t);
     if (project) lastTool.set(project.id, t);
@@ -439,6 +470,29 @@ export default function Workspace({ itemId, me }: Props) {
                              onLoad={loadModel} />
               </>
             )}
+            {tool === 'box' && (
+              <>
+                <label className="check">
+                  <input type="checkbox" checked={fixedBox.on}
+                         onChange={(e) => updateFixedBox({ on: e.target.checked })} />
+                  Fixed size (click to place)
+                </label>
+                {fixedBox.on && (
+                  <div className="row">
+                    {(['w', 'h'] as const).map((k) => (
+                      <label key={k}>{k === 'w' ? 'Width' : 'Height'} (px)
+                        <input type="number" min={1} step={1}
+                               max={k === 'w' ? item.width : item.height} value={fixedBox[k]}
+                               onChange={(e) => {
+                                 const v = Math.round(Number(e.target.value));
+                                 if (v >= 1) updateFixedBox({ [k]: v });
+                               }} />
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </section>
         )}
 
@@ -539,6 +593,7 @@ export default function Workspace({ itemId, me }: Props) {
             session={session}
             sessionOverlay={overlay}
             tool={tool}
+            fixedBox={fixedBox.on ? [fixedBox.w, fixedBox.h] : null}
             drawColor={cls?.color ?? '#facc15'}
             busy={busy}
             onAssistClick={assistClick}
