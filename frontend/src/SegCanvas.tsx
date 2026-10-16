@@ -23,6 +23,19 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 /**
+ * Where the image is drawn inside the canvas element. The CSS uses
+ * ``object-fit: contain``, so the element box can be larger than the
+ * picture, which is centred in it.
+ */
+function contentRect(canvas: HTMLCanvasElement, width: number, height: number) {
+  const rect = canvas.getBoundingClientRect();
+  const scale = Math.min(rect.width / width, rect.height / height);
+  const w = width * scale, h = height * scale;
+  return { left: rect.left + (rect.width - w) / 2, top: rect.top + (rect.height - h) / 2,
+           width: w, height: h };
+}
+
+/**
  * Draws image + mask overlay + clicks at native resolution; CSS scales the
  * canvas to fit. Left click = positive, right click = negative.
  */
@@ -55,7 +68,7 @@ export default function SegCanvas(props: Props) {
       ctx.globalAlpha = 1;
     }
     // Keep click markers a constant on-screen size regardless of zoom.
-    const rect = canvasRef.current!.getBoundingClientRect();
+    const rect = contentRect(canvasRef.current!, width, height);
     const scale = rect.width > 0 ? width / rect.width : 1;
     const r = clickRadius * scale;
     for (const c of clicks) {
@@ -72,7 +85,7 @@ export default function SegCanvas(props: Props) {
   const handle = (e: MouseEvent<HTMLCanvasElement>, positive: boolean) => {
     e.preventDefault();
     if (busy) return;
-    const rect = e.currentTarget.getBoundingClientRect();
+    const rect = contentRect(e.currentTarget, width, height);
     const x = Math.floor(((e.clientX - rect.left) / rect.width) * width);
     const y = Math.floor(((e.clientY - rect.top) / rect.height) * height);
     if (x < 0 || y < 0 || x >= width || y >= height) return;
