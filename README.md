@@ -74,6 +74,16 @@ for other RITM weights, treat any mirror as unvetted: PyTorch checkpoints are
 pickle files and can execute code on load. The loader here uses
 `weights_only=True`, which is a real safeguard. Leave it on.
 
+For general-purpose (non-lesion) images, the original COCO+LVIS HRNet-18
+checkpoint `coco_lvis_h18_itermask.pth` is mirrored in a release of
+[lucasew/ritm_annotation](https://github.com/lucasew/ritm_annotation/releases/download/0.0.1/coco_lvis_h18_itermask.pth).
+This is a third-party copy: its SHA-256,
+`5f69cfce354d1507e3850bfc39ee7057c8dd27b6a4910d1d2dc724916b9ee32b`, has been
+listed unchanged in that project's README since version 0.0.8, but there is no
+remaining official hash to compare against. The file references only tensor
+storage and `OrderedDict`, so it loads under `weights_only=True`. Put it in
+`model_weights/`; it appears as a second RITM model.
+
 ## Run
 
 ```bash

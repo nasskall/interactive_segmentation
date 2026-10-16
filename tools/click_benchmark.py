@@ -49,9 +49,11 @@ from interactive_demo.controller import InteractiveController   # noqa: E402
 DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 WEIGHTS = ROOT / 'model_weights'
 CHECKPOINTS = {
-    'ritm': ('best_checkpoint_068.pth', None),
+    'ritm': ('best_checkpoint_068.pth', None),           # fine-tuned for skin lesions
+    'ritm_coco': ('coco_lvis_h18_itermask.pth', None),   # general-purpose RITM (COCO + LVIS)
     'sam': ('sam_vit_b_01ec64.pth', 'SAM - ViT-B'),
     'sam2': ('sam2.1_hiera_tiny.pt', 'SAM2 - Tiny'),
+    'simpleclick': ('cocolvis_vit_base.pth', None),
 }
 
 
@@ -138,10 +140,12 @@ def fmt(r: dict) -> str:
 def load_model(kind: str):
     ckpt, label = CHECKPOINTS[kind]
     ckpt = WEIGHTS / ckpt
-    if kind == 'ritm':
+    if kind in ('ritm', 'ritm_coco'):
         return iu.load_is_model(str(ckpt), device=DEVICE, cpu_dist_maps=True)
     if kind == 'sam':
         return iu.load_sam_model(str(ckpt), label, DEVICE)
+    if kind == 'simpleclick':
+        return iu.load_simpleclick_model(str(ckpt), DEVICE)
     return iu.load_sam2_model(str(ckpt), label, DEVICE)
 
 
@@ -161,6 +165,11 @@ def main():
     ap.add_argument('--sampled-clicks', action='store_true',
                     help='train on clicks sampled from the accepted masks instead of '
                          'the recorded ones (the earlier behaviour)')
+    ap.add_argument('--sweep-lr', default=None,
+                    help='comma-separated learning rates to compare, e.g. 5e-4,2e-4,1e-4; '
+                         'replaces the --presses run')
+    ap.add_argument('--sweep-steps', default='10,30,90',
+                    help='total training steps at which each --sweep-lr is scored')
     ap.add_argument('--seed', type=int, default=0)
     args = ap.parse_args()
 
@@ -211,8 +220,30 @@ def main():
     print(f'  session   {len(ctrl.replay_buffer)} objects recorded, '
           f'{np.mean(session_clicks):.1f} clicks each')
 
-    ctrl._ensure_online_adapter().config.use_recorded_clicks = not args.sampled_clicks
+    adapter = ctrl._ensure_online_adapter()
+    adapter.config.use_recorded_clicks = not args.sampled_clicks
     print(f'  training on {"sampled" if args.sampled_clicks else "recorded"} clicks')
+
+    if args.sweep_lr:
+        # Same baseline and session for every setting: train in increments,
+        # score at each total, then roll everything back.
+        totals = [int(s) for s in args.sweep_steps.split(',')]
+        for lr in (float(v) for v in args.sweep_lr.split(',')):
+            adapter.config.lr = lr
+            done, presses = 0, 0
+            for total in totals:
+                adapter.config.steps = total - done
+                ctrl.adapt_now()
+                done, presses = total, presses + 1
+                r = evaluate(ctrl, evals, args.max_clicks)
+                print(f'  lr {lr:<7g} {total:>3} steps  {fmt(r)}', flush=True)
+            for _ in range(presses):
+                ctrl.rollback_adapter()
+        rolled = evaluate(ctrl, evals, args.max_clicks)
+        same = all(abs(rolled[k] - base[k]) < 1e-6 for k in base if k != 's/click')
+        print(f'  rollback restores the baseline: {"yes" if same else "NO"}')
+        return
+
     t = time.time()
     for i in range(args.presses):
         rep = ctrl.adapt_now()
