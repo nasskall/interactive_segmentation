@@ -95,7 +95,7 @@ class SAM2InteractivePredictor:
                 box=box,
                 mask_input=self.prev_logit,
                 multimask_output=len(clicks_list) == 1 and box is None,
-                return_logits=self.soft,
+                **({'return_logits': True} if self.soft else {}),
             )
 
         best_idx = int(np.argmax(scores))
