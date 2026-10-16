@@ -105,6 +105,28 @@ class InteractiveController:
 
         self.update_image_callback()
 
+    @property
+    def supports_box(self) -> bool:
+        # An ensemble has set_box but only takes boxes with a SAM member.
+        return getattr(self.predictor, 'supports_box', hasattr(self.predictor, 'set_box'))
+
+    def set_box(self, x0, y0, x1, y1):
+        """Prompt the current object with a box (SAM / SAM 2 only); clicks
+        added before or after refine it. Undo removes it like a click."""
+        if not self.supports_box:
+            raise ValueError(f'Box prompts need SAM or SAM 2, not {self.model_type!r}')
+        self.states.append({
+            'clicker': self.clicker.get_state(),
+            'predictor': self.predictor.get_states()
+        })
+        self.predictor.set_box((x0, y0, x1, y1))
+        pred = self.predictor.get_prediction(self.clicker)
+        if self.probs_history:
+            self.probs_history.append((self.probs_history[-1][0], pred))
+        else:
+            self.probs_history.append((np.zeros_like(pred), pred))
+        self.update_image_callback()
+
     def undo_click(self):
         if not self.states:
             return
@@ -151,10 +173,22 @@ class InteractiveController:
         self.states = []
         self.probs_history = []
         self.clicker.reset_clicks()
-        self.reset_predictor()
+        # SAM / SAM 2 keep the image embedding, which takes seconds on CPU to
+        # compute; when the image is unchanged only the prompts are cleared.
+        if (hasattr(self.predictor, 'reset_prompts')
+                and getattr(self.predictor, 'source_image', None) is self.image):
+            self.predictor.reset_prompts()
+        else:
+            self.reset_predictor()
         self.reset_init_mask()
         if update_image:
             self.update_image_callback()
+
+    def clear_objects(self):
+        """Drop every finished and in-progress object, keeping the image."""
+        self._result_mask = np.zeros(self.image.shape[:2], dtype=np.uint16)
+        self.object_count = 0
+        self.reset_last_object(update_image=False)
 
     def reset_predictor(self, predictor_params=None):
         if predictor_params is not None:
@@ -216,7 +250,7 @@ class InteractiveController:
                 model=self.net,
                 model_type=self.model_type,
                 device=self.device,
-                config=OnlineAdaptConfig(),
+                config=OnlineAdaptConfig.for_model(self.model_type),
                 log_cb=self._adapter_log_cb,
             )
             self._online_adapter.ensure_injected()

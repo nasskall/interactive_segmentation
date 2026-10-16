@@ -32,12 +32,16 @@ class FakePredictor:
     def set_image(self, image):
         pass
 
-    def predict(self, point_coords, point_labels, mask_input, multimask_output):
+    def predict(self, point_coords, point_labels, box, mask_input, multimask_output,
+                return_logits=False):
         self.calls.append(multimask_output)
+        self.last = {'points': point_coords, 'box': box}
         n = 3 if multimask_output else 1
         masks = np.zeros((n, H, W), dtype=bool)
         for i in range(n):
             masks[i, : 10 * (i + 1)] = True
+        if return_logits:   # like SAM: full-resolution logits instead of 0/1
+            masks = np.where(masks, 4.0, -4.0).astype(np.float32)
         scores = np.array([0.2, 0.9, 0.5][:n])
         logits = np.stack([np.full((256, 256), float(i)) for i in range(n)])
         return masks, scores, logits
@@ -74,6 +78,19 @@ def test_first_click_uses_best_of_three_candidates(wrapper):
     assert (wrapper.prev_logit == 1.0).all() and wrapper.prev_logit.shape == (1, 256, 256)
 
 
+def test_soft_mode_returns_probabilities_and_score(wrapper):
+    clicker = Clicker()
+    clicker.add_click(Click(is_positive=True, coords=(5, 5)))
+    assert wrapper.get_prediction(clicker).dtype == np.float32
+    wrapper.reset_prompts()
+    wrapper.soft = True                       # what the ensemble switches on
+    prob = wrapper.get_prediction(clicker)
+    # Same best candidate (top 20 rows), as sigmoid(+-4) rather than 0/1.
+    assert prob[:20].min() == pytest.approx(0.982, abs=1e-3)
+    assert prob[20:].max() == pytest.approx(0.018, abs=1e-3)
+    assert wrapper.last_score == pytest.approx(0.9)
+
+
 def test_later_clicks_use_a_single_mask(wrapper):
     clicker = Clicker()
     clicker.add_click(Click(is_positive=True, coords=(5, 5)))
@@ -82,6 +99,31 @@ def test_later_clicks_use_a_single_mask(wrapper):
     wrapper.get_prediction(clicker)
 
     assert _inner(wrapper).calls == [True, False]
+
+
+def test_box_prompt_alone_and_with_clicks(wrapper):
+    clicker = Clicker()
+    wrapper.set_box((4, 6, 30, 40))
+    prob = wrapper.get_prediction(clicker)
+    inner = _inner(wrapper)
+    # A box is unambiguous: one mask, no points.
+    assert inner.calls == [False] and prob[:10].all()
+    assert inner.last['points'] is None
+    np.testing.assert_array_equal(inner.last['box'], [4, 6, 30, 40])
+
+    clicker.add_click(Click(is_positive=False, coords=(20, 10)))
+    wrapper.get_prediction(clicker)
+    assert inner.calls == [False, False]
+    np.testing.assert_array_equal(inner.last['points'], [[10, 20]])
+    np.testing.assert_array_equal(inner.last['box'], [4, 6, 30, 40])
+
+
+def test_box_is_part_of_undo_state(wrapper):
+    before = wrapper.get_states()
+    wrapper.set_box((1, 2, 3, 4))
+    assert wrapper.get_states()['box'] == [1, 2, 3, 4]
+    wrapper.set_states(before)
+    assert wrapper.box is None
 
 
 # ---------------------------------------------------------------------------
@@ -189,3 +231,52 @@ def test_real_auto_segment_finds_lesion(fixture_name, request, device):
     pred = ctrl.result_mask > 0
     iou = (pred & gt).sum() / (pred | gt).sum()
     assert iou > 0.8, f'IoU with the lesion is {iou:.3f}'
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('fixture_name', [
+    pytest.param('sam_model', marks=pytest.mark.sam),
+    pytest.param('sam2_model', marks=pytest.mark.sam2),
+])
+def test_real_box_prompt_segments_the_lesion(fixture_name, request, device):
+    model = request.getfixturevalue(fixture_name)[0]
+    img, gt = _synthetic_lesion()
+    ctrl = InteractiveController(model, device, predictor_params={},
+                                 update_image_callback=lambda *a, **k: None)
+    ctrl.set_image(img)
+    ys, xs = np.nonzero(gt)
+    ctrl.set_box(xs.min() - 4, ys.min() - 4, xs.max() + 4, ys.max() + 4)
+    pred = ctrl.result_mask > 0
+    iou = (pred & gt).sum() / (pred | gt).sum()
+    assert iou > 0.85, f'IoU with the lesion is {iou:.3f}'
+    ctrl.undo_click()
+    assert not ctrl.is_incomplete_mask and ctrl.predictor.box is None
+
+
+def test_clearing_an_object_keeps_the_image_embedding(monkeypatch):
+    encodes = []
+
+    class CountingPredictor(FakePredictor):
+        def set_image(self, image):
+            encodes.append(image)
+
+    monkeypatch.setattr(sam_predictor, 'SAM_AVAILABLE', True)
+    monkeypatch.setattr(sam_predictor, 'SamPredictor', CountingPredictor, raising=False)
+    net = types.SimpleNamespace(_model_type='sam')
+    ctrl = InteractiveController(net, 'cpu', predictor_params={},
+                                 update_image_callback=lambda *a, **k: None)
+    ctrl.set_image(np.zeros((H, W, 3), np.uint8))
+    assert len(encodes) == 1
+
+    ctrl.add_click(5, 5, True)
+    ctrl.set_box(1, 1, 30, 30)
+    ctrl.reset_last_object(update_image=False)
+    assert ctrl.predictor.box is None and ctrl.predictor.prev_logit is None
+    ctrl.add_click(5, 5, True)
+    ctrl.finish_object()
+    ctrl.clear_objects()
+    assert len(encodes) == 1 and ctrl.object_count == 0 and not ctrl.result_mask.any()
+
+    # A different image is encoded afresh.
+    ctrl.set_image(np.ones((H, W, 3), np.uint8))
+    assert len(encodes) == 2

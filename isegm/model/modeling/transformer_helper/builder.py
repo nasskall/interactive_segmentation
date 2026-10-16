@@ -6,11 +6,43 @@ try:  # mmcv 1.x
     from mmcv.cnn.bricks.registry import ATTENTION as MMCV_ATTENTION
     from mmcv.utils import Registry, build_from_cfg
 except ImportError:
-    # mmcv 2.x removed mmcv.utils.Registry, mmcv.cnn.MODELS and the
-    # bricks.registry module; the registry machinery now lives in mmengine.
-    from mmengine.registry import MODELS as MMCV_MODELS
-    from mmengine.registry import Registry, build_from_cfg
-    MMCV_ATTENTION = MMCV_MODELS
+    try:
+        # mmcv 2.x removed mmcv.utils.Registry, mmcv.cnn.MODELS and the
+        # bricks.registry module; the registry machinery now lives in mmengine.
+        from mmengine.registry import MODELS as MMCV_MODELS
+        from mmengine.registry import Registry, build_from_cfg
+        MMCV_ATTENTION = MMCV_MODELS
+    except ImportError:
+        # Neither installed. SimpleClick inference only needs the loss
+        # classes to register at import time, so a minimal registry will do.
+        class Registry:
+            def __init__(self, name, parent=None, scope=None):
+                self.name = name
+                self._modules = {}
+
+            def register_module(self, name=None, module=None, force=False):
+                def register(cls):
+                    self._modules[name or cls.__name__] = cls
+                    return cls
+                return register(module) if module is not None else register
+
+            def get(self, key):
+                return self._modules.get(key)
+
+            def build(self, cfg, default_args=None):
+                return build_from_cfg(cfg, self, default_args)
+
+        def build_from_cfg(cfg, registry, default_args=None):
+            args = dict(cfg)
+            obj_type = args.pop('type')
+            for k, v in (default_args or {}).items():
+                args.setdefault(k, v)
+            cls = registry.get(obj_type) if isinstance(obj_type, str) else obj_type
+            if cls is None:
+                raise KeyError(f'{obj_type!r} is not registered in {registry.name}')
+            return cls(**args)
+
+        MMCV_MODELS = MMCV_ATTENTION = None
 
 
 PIXEL_SAMPLERS = Registry('pixel sampler')

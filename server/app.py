@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from server.sessions import ModelManager, SessionNotFound, encode_png
+from server.sessions import ENSEMBLE, ModelManager, SessionNotFound, encode_png
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
@@ -33,19 +33,44 @@ class ClickIn(BaseModel):
     positive: bool = True
 
 
+class BoxIn(BaseModel):
+    x0: float = Field(ge=0)
+    y0: float = Field(ge=0)
+    x1: float = Field(ge=0)
+    y1: float = Field(ge=0)
+
+
 class SettingsIn(BaseModel):
     prob_thresh: Optional[float] = Field(default=None, gt=0.0, lt=1.0)
     use_zoom_in: Optional[bool] = None
 
 
-class LoadModelIn(BaseModel):
+class EnsembleMemberIn(BaseModel):
     model_type: str
     checkpoint: str
 
 
-def create_app(manager: ModelManager, static_dir: Optional[Path] = None) -> FastAPI:
+class LoadModelIn(BaseModel):
+    """A single model (``checkpoint``), or ``model_type`` "Ensemble" with
+    ``members``, ``fusion`` and ``tta``."""
+    model_type: str
+    checkpoint: Optional[str] = None
+    members: Optional[list[EnsembleMemberIn]] = None
+    fusion: str = 'staple'
+    tta: bool = False
+
+
+def create_app(manager: ModelManager, static_dir: Optional[Path] = None,
+               data_dir: Optional[Path] = None) -> FastAPI:
+    """``data_dir`` enables labelling projects (database + uploaded images);
+    without it only the stateless segmentation endpoints are served."""
     app = FastAPI(title='Interactive Segmentation API', version='1.0')
     app.state.manager = manager
+    app.state.labelling = None
+    if data_dir is not None:
+        from server.labelling.api import build_router
+        router, app.state.labelling = build_router(data_dir, manager)
+        app.include_router(router)
 
     # The Vite dev server proxies /api, so CORS is only needed when the
     # frontend is hosted on a different origin.
@@ -67,7 +92,13 @@ def create_app(manager: ModelManager, static_dir: Optional[Path] = None) -> Fast
     @app.post('/api/models/load')
     def load_model(body: LoadModelIn):
         try:
-            manager.load_model(body.model_type, body.checkpoint)
+            if body.model_type == ENSEMBLE:
+                manager.load_ensemble([(m.model_type, m.checkpoint) for m in body.members or []],
+                                      body.fusion, body.tta)
+            elif body.checkpoint is None:
+                raise ValueError('checkpoint is required')
+            else:
+                manager.load_model(body.model_type, body.checkpoint)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except Exception as exc:
@@ -112,6 +143,19 @@ def create_app(manager: ModelManager, static_dir: Optional[Path] = None) -> Fast
             raise HTTPException(400, f'Click ({click.x}, {click.y}) outside {w}x{h} image')
         with manager.lock:
             s.controller.add_click(click.x, click.y, click.positive)
+            return s.state()
+
+    @app.post('/api/sessions/{sid}/box')
+    def set_box(sid: str, box: BoxIn):
+        """Box prompt for the current object (SAM / SAM 2 only)."""
+        s = manager.get(sid)
+        h, w = s.image.shape[:2]
+        if not (box.x0 < box.x1 <= w and box.y0 < box.y1 <= h):
+            raise HTTPException(400, f'Box must have x0 < x1 <= {w} and y0 < y1 <= {h}')
+        with manager.lock:
+            if not s.controller.supports_box:
+                raise HTTPException(422, 'Box prompts need a SAM or SAM 2 model')
+            s.controller.set_box(box.x0, box.y0, box.x1, box.y1)
             return s.state()
 
     @app.post('/api/sessions/{sid}/undo')

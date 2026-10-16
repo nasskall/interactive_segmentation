@@ -5,8 +5,11 @@ User flow:
   1. Toggle "Online adapt from clicks" → buffer recording on.
   2. Segment images normally; each ``finish_object`` pushes a buffer entry.
   3. Click "Adapt now" → run K SGD steps against the buffer with the same
-     LoRA config used by ``few_shot_trainer``. State is snapshotted before
-     stepping so "Rollback last" can revert.
+     LoRA config used by ``few_shot_trainer``. Each step replays the user's
+     own recorded clicks for one object (a random prefix of the sequence,
+     see ``few_shot_trainer._click_rounds``) and trains towards the mask
+     the user accepted. State is snapshotted before stepping so "Rollback
+     last" can revert.
 
 No automatic adaptation — every update is explicit.
 """
@@ -21,9 +24,7 @@ import torch
 import torch.nn.functional as F
 
 from .few_shot_trainer import (
-    _sample_click_pixels,
-    _build_ritm_points_nd,
-    _soft_iou,
+    _scale_clicks,
     _step_ritm_family,
     _step_sam,
     _step_sam2,
@@ -47,6 +48,24 @@ class OnlineAdaptConfig:
     iou_weight: float = 1.0
     cpu_max_side: int = 384         # extra-conservative on CPU for live UX
     cuda_max_side: int = 768
+    # Train on the user's recorded clicks; False samples clicks from the
+    # accepted mask instead (the earlier behaviour, kept for comparison).
+    use_recorded_clicks: bool = True
+
+    @classmethod
+    def for_model(cls, model_type: str) -> 'OnlineAdaptConfig':
+        """Defaults tuned for ``model_type`` (see MODEL_DEFAULTS)."""
+        return cls(**MODEL_DEFAULTS.get(model_type, {}))
+
+
+# Per-model overrides of OnlineAdaptConfig, from tools/click_benchmark.py
+# --sweep-lr on COCO128-seg people (8 session objects, 12 held out):
+#   sam: lr 2e-4 x 30 steps was the only setting no worse than the
+#        unadapted model on any measure (NoC@90 7.33 -> 5.33, mIoU@1
+#        0.33 -> 0.51); the old 5e-4 x 90 steps made it worse (NoC@90 9.08).
+MODEL_DEFAULTS: dict[str, dict] = {
+    'sam': {'lr': 2e-4, 'steps': 30},
+}
 
 
 class OnlineAdapter:
@@ -164,6 +183,9 @@ class OnlineAdapter:
         for step in range(self.config.steps):
             entry = entries[np.random.randint(len(entries))]
             image_np, gt_np = _resize_pair(entry.image, entry.accepted_mask, max_side)
+            user_clicks = None
+            if self.config.use_recorded_clicks and entry.clicks:
+                user_clicks = _scale_clicks(entry.clicks, entry.shape(), gt_np.shape)
 
             optimizer.zero_grad()
             cfg_for_step = _StepConfig(
@@ -174,13 +196,13 @@ class OnlineAdapter:
             try:
                 if self.model_type in ('ritm', 'simpleclick'):
                     step_losses = _step_ritm_family(self.model, image_np, gt_np,
-                                                    cfg_for_step, self.device)
+                                                    cfg_for_step, self.device, user_clicks)
                 elif self.model_type == 'sam':
                     step_losses = _step_sam(sam_predictor, image_np, gt_np,
-                                            cfg_for_step, self.device)
+                                            cfg_for_step, self.device, user_clicks)
                 elif self.model_type == 'sam2':
                     step_losses = _step_sam2(sam2_predictor, image_np, gt_np,
-                                             cfg_for_step, self.device)
+                                             cfg_for_step, self.device, user_clicks)
                 else:
                     raise ValueError(f"Unsupported model_type: {self.model_type}")
             except Exception as exc:
