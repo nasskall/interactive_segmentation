@@ -45,6 +45,10 @@ def get_predictor(net,
     # ------------------------------------------------------------------ #
     model_type = getattr(net, '_model_type', 'ritm')
 
+    if model_type == 'ensemble':
+        from .ensemble import EnsemblePredictor
+        return EnsemblePredictor(net, device)
+
     if model_type == 'sam':
         return SAMInteractivePredictor(net, device)
 
