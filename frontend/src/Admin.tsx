@@ -1,8 +1,8 @@
-// Admin screens: projects, classes, uploads, assignment, team progress, users.
+// Admin screens: projects, classes, uploads, assignment, team progress, exports, users.
 
 import { useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react';
-import { api, TASK_LABELS, type Item, type LabelClass, type LabelType, type Progress,
-         type Project, type TaskType, type User } from './api';
+import { api, TASK_FORMATS, TASK_LABELS, type ExportFormat, type Item, type LabelClass,
+         type LabelType, type Progress, type Project, type TaskType, type User } from './api';
 import { go, href } from './lib';
 
 const TASK_HELP: Record<TaskType, string> = {
@@ -499,6 +499,66 @@ export function TeamProgress({ progress, items }: { progress: Progress | undefin
       {progress.by_labeller.length === 0 && <p className="muted">Nobody is assigned yet. Select
         images on the Images tab and assign them.</p>}
       <p className="meta">{unassigned} of {items.length} images unassigned.</p>
+    </div>
+  );
+}
+
+// ── export ─────────────────────────────────────────────────────────────────
+
+const FORMAT_INFO: Record<ExportFormat, { label: string; help: string }> = {
+  coco: { label: 'COCO JSON', help: 'annotations.json with boxes, polygons and RLE masks.' },
+  masks: { label: 'PNG masks', help: 'One class-index PNG per image (0 = background), plus '
+                                     + 'instance-id PNGs for instance segmentation.' },
+  yolo: { label: 'YOLO', help: 'One label .txt per image and data.yaml; boxes for detection, '
+                               + 'polygons for segmentation.' },
+  csv: { label: 'CSV', help: 'One row per label with class, labeller, box and area.' },
+};
+
+export function ExportPanel({ project, progress }: { project: Project; progress: Progress | undefined }) {
+  const formats = TASK_FORMATS[project.task_type];
+  const [format, setFormat] = useState<ExportFormat>(formats[0]);
+  const [doneOnly, setDoneOnly] = useState(true);
+  const [withImages, setWithImages] = useState(true);
+  const { busy, error, run } = useAsync();
+  const count = progress ? (doneOnly ? progress.by_status.done : progress.items) : null;
+
+  const download = () => run(async () => {
+    const { blob, filename } = await api.exportProject(project.id, format, {
+      status: doneOnly ? 'done' : 'all', include_images: withImages });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  return (
+    <div className="card form">
+      <fieldset className="formats">
+        {formats.map((f) => (
+          <label key={f} className="check">
+            <input type="radio" name="format" checked={format === f} onChange={() => setFormat(f)} />
+            <span><strong>{FORMAT_INFO[f].label}</strong>
+              <span className="meta"> — {FORMAT_INFO[f].help}</span></span>
+          </label>
+        ))}
+      </fieldset>
+      <label className="check"><input type="checkbox" checked={doneOnly}
+                                      onChange={(e) => setDoneOnly(e.target.checked)} />
+        Only images marked done</label>
+      {format !== 'csv' && (
+        <label className="check"><input type="checkbox" checked={withImages}
+                                        onChange={(e) => setWithImages(e.target.checked)} />
+          Include the images in the zip</label>
+      )}
+      {error && <p className="error-text">{error}</p>}
+      <div className="row-end">
+        {count !== null && <span className="muted small">{count} image{count === 1 ? '' : 's'}</span>}
+        <button className="primary" disabled={busy || count === 0} onClick={download}>
+          {busy ? 'Preparing…' : 'Download'}
+        </button>
+      </div>
     </div>
   );
 }

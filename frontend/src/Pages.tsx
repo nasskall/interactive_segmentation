@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { AssignBar, ClassesEditor, NewProject, ProjectSettings, TeamProgress,
+import { AssignBar, ClassesEditor, ExportPanel, NewProject, ProjectSettings, TeamProgress,
          UploadPanel } from './Admin';
 import { api, setToken, TASK_LABELS, type Item, type ItemStatus, type Progress, type Project,
          type User } from './api';
@@ -151,7 +151,7 @@ export function Projects({ me }: { me: User }) {
 
 const STATUS_FILTERS: (ItemStatus | 'all')[] = ['all', 'todo', 'in_progress', 'done'];
 const TAB_LABELS: Record<ProjectTab, string> = {
-  items: 'Images', classes: 'Classes', team: 'Team', settings: 'Settings',
+  items: 'Images', classes: 'Classes', team: 'Team', export: 'Export', settings: 'Settings',
 };
 
 export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: ProjectTab; me: User }) {
@@ -199,7 +199,7 @@ export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: Pr
     for (const i of shown) { if (allShownSelected) next2.delete(i.id); else next2.add(i.id); }
     setSelected(next2);
   };
-  const tabs: ProjectTab[] = admin ? ['items', 'classes', 'team', 'settings'] : ['items'];
+  const tabs: ProjectTab[] = admin ? ['items', 'classes', 'team', 'export', 'settings'] : ['items'];
 
   return (
     <div className="page">
@@ -229,6 +229,7 @@ export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: Pr
       {tab === 'classes' && admin && <ClassesEditor project={project} />}
       {tab === 'settings' && admin && <ProjectSettings project={project} onSaved={setProject} />}
       {tab === 'team' && admin && <TeamProgress progress={progress} items={items} />}
+      {tab === 'export' && admin && <ExportPanel project={project} progress={progress} />}
 
       {(tab === 'items' || !admin) && (
         <>

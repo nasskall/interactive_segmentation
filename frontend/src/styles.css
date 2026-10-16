@@ -354,3 +354,7 @@ table.users .actions { display: flex; gap: 6px; justify-content: flex-end; flex-
   .grid2, .pair-pick { grid-template-columns: 1fr; }
   table.users th:nth-child(2), table.users td:nth-child(2) { display: none; }
 }
+
+.formats { display: flex; flex-direction: column; gap: 10px; }
+.formats label.check { align-items: flex-start; }
+.formats input { margin-top: 3px; }

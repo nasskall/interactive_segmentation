@@ -5,10 +5,10 @@ import { fetchImageUrl, type Rle } from './api';
 
 // ── routing ────────────────────────────────────────────────────────────────
 // Routes live in the URL hash so the backend's static file server needs no
-// rewrites: #/ projects · #/projects/3[/classes|team|settings] · #/items/12
+// rewrites: #/ projects · #/projects/3[/classes|team|export|settings] · #/items/12
 // workspace · #/users · #/quick
 
-export type ProjectTab = 'items' | 'classes' | 'team' | 'settings';
+export type ProjectTab = 'items' | 'classes' | 'team' | 'export' | 'settings';
 
 export type Route =
   | { page: 'projects' }
@@ -17,7 +17,7 @@ export type Route =
   | { page: 'users' }
   | { page: 'quick' };
 
-const TABS: ProjectTab[] = ['items', 'classes', 'team', 'settings'];
+const TABS: ProjectTab[] = ['items', 'classes', 'team', 'export', 'settings'];
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
