@@ -167,7 +167,7 @@ export default function QuickSegment() {
 
         <section className="help">
           Left click: add to object · Right click: remove<br />
-          Ctrl+Z undo · Space finish · Esc reset
+          Ctrl+Z undo · Space finish · Esc reset · wheel or + / − zoom · 0 fit · drag to pan when zoomed
         </section>
       </aside>
 

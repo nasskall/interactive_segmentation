@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent,
-         type WheelEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent,
+         type PointerEvent } from 'react';
 import type { Annotation, LabelClass, SessionState } from './api';
 import { maskCanvas } from './lib';
+import { useZoomPan, ZoomControls } from './zoom';
 
 export type Tool = 'assist' | 'box' | 'polygon' | 'select';
 
@@ -31,19 +32,17 @@ interface Props {
 }
 
 const DRAG_THRESHOLD = 5;   // screen px before a press counts as a drag
-const MIN_ZOOM = 1;
-const MAX_ZOOM = 32;
 
 /**
  * The labelling surface. Draws at the image's native resolution and lets
- * CSS fit it to the stage; wheel zooms around the cursor, middle-drag or
- * Space+drag pans.
+ * CSS fit it to the stage; zoom with the wheel, the on-screen controls or
+ * + / - / 0 (see zoom.tsx), pan with middle-drag or Space+drag.
  */
 export default function AnnotCanvas(p: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [fit, setFit] = useState(1);
-  const [view, setView] = useState({ zoom: 1, tx: 0, ty: 0 });
+  const zoom = useZoomPan(stageRef, p.width, p.height);
+  const { fit, view, reset: resetZoom } = zoom;
   const [drag, setDrag] = useState<null | { x0: number; y0: number; x1: number; y1: number;
                                            sx: number; sy: number; moved: boolean;
                                            pan: boolean }>(null);
@@ -51,22 +50,11 @@ export default function AnnotCanvas(p: Props) {
   const [hover, setHover] = useState<[number, number] | null>(null);
   const spaceDown = useRef(false);
 
-  // Fit the image into the stage; re-fit on resize.
-  useEffect(() => {
-    const el = stageRef.current;
-    if (!el) return;
-    const update = () => setFit(Math.min(el.clientWidth / p.width, el.clientHeight / p.height));
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [p.width, p.height]);
-
   // New image: reset zoom and any half-drawn shape.
   useEffect(() => {
-    setView({ zoom: 1, tx: 0, ty: 0 });
+    resetZoom();
     setDraft([]);
-  }, [p.image, p.width, p.height]);
+  }, [p.image, p.width, p.height, resetZoom]);
   useEffect(() => { setDraft([]); }, [p.tool]);
 
   // Box tool, fixed size: the box a click at (x, y) places, centred on the
@@ -268,7 +256,7 @@ export default function AnnotCanvas(p: Props) {
     if (!drag) return;
     const moved = drag.moved || Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > DRAG_THRESHOLD;
     if (drag.pan) {
-      setView((v) => ({ ...v, tx: v.tx + e.movementX, ty: v.ty + e.movementY }));
+      zoom.panBy(e.movementX, e.movementY);
       setDrag({ ...drag, moved });
       return;
     }
@@ -314,19 +302,6 @@ export default function AnnotCanvas(p: Props) {
     if (inside(pt)) p.onAssistClick(pt[0], pt[1], false);
   };
 
-  const onWheel = (e: WheelEvent<HTMLDivElement>) => {
-    const stage = stageRef.current!.getBoundingClientRect();
-    const px = e.clientX - stage.left, py = e.clientY - stage.top;
-    setView((v) => {
-      const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.zoom * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
-      if (zoom === MIN_ZOOM) return { zoom, tx: 0, ty: 0 };
-      // Keep the point under the cursor fixed.
-      const ox = stage.width / 2 - (p.width * fit) / 2, oy = stage.height / 2 - (p.height * fit) / 2;
-      const ux = (px - ox - v.tx) / v.zoom, uy = (py - oy - v.ty) / v.zoom;
-      return { zoom, tx: px - ox - ux * zoom, ty: py - oy - uy * zoom };
-    });
-  };
-
   // Keys for the polygon tool and Space-to-pan.
   useEffect(() => {
     const typing = (e: KeyboardEvent) =>
@@ -362,17 +337,12 @@ export default function AnnotCanvas(p: Props) {
     : p.tool === 'select' ? 'pointer' : 'crosshair';
 
   return (
-    <div className="annot-stage" ref={stageRef} onWheel={onWheel}>
+    <div className="annot-stage" ref={stageRef} onWheel={zoom.onWheel}>
       <canvas
         ref={canvasRef}
         width={p.width}
         height={p.height}
-        style={{
-          width: p.width * fit,
-          height: p.height * fit,
-          transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.zoom})`,
-          cursor,
-        }}
+        style={{ ...zoom.canvasStyle, cursor }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -380,11 +350,8 @@ export default function AnnotCanvas(p: Props) {
         onContextMenu={onContextMenu}
         onAuxClick={(e) => e.preventDefault()}
       />
-      {view.zoom > 1 && (
-        <button className="fit-button" onClick={() => setView({ zoom: 1, tx: 0, ty: 0 })}>
-          Fit ({Math.round(view.zoom * 100)}%)
-        </button>
-      )}
+      <ZoomControls zoom={view.zoom} onZoomIn={zoom.zoomIn} onZoomOut={zoom.zoomOut}
+                    onFit={zoom.reset} />
     </div>
   );
 }
