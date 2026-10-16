@@ -169,3 +169,79 @@ def test_online_adapter_reset_zeroes_b(fresh_ritm, device):
             assert torch.allclose(
                 mod.lora_up.weight, torch.zeros_like(mod.lora_up.weight)
             )
+
+
+# ---------------------------------------------------------------------------
+# Training on the user's recorded clicks
+# ---------------------------------------------------------------------------
+
+def test_click_rounds_replay_a_prefix_of_the_recorded_clicks():
+    from isegm.adaptation import few_shot_trainer as fst
+    clicks = [(10, 20, True), (30, 40, False), (50, 60, True)]
+    gt = np.zeros((64, 64), bool)
+    seen = set()
+    for seed in range(30):
+        np.random.seed(seed)
+        rounds = list(fst._click_rounds(FewShotConfig(), gt, clicks, lambda: None))
+        k = len(rounds)
+        # Prefixes 1..k in order; only the last one is trained on.
+        assert [r[0] for r in rounds] == [clicks[:j] for j in range(1, k + 1)]
+        assert [r[1] for r in rounds] == [False] * (k - 1) + [True]
+        seen.add(k)
+    assert seen == {1, 2, 3}
+
+
+def test_ritm_points_keep_click_order():
+    from isegm.adaptation import few_shot_trainer as fst
+    pts = fst._build_ritm_points_seq([(1, 2, True), (3, 4, False), (5, 6, True)], 'cpu')
+    assert pts.tolist() == [[[1, 2, 0], [5, 6, 2], [3, 4, 1], [-1, -1, -1]]]
+
+
+def test_scale_clicks_stays_inside_the_image():
+    from isegm.adaptation import few_shot_trainer as fst
+    assert fst._scale_clicks([(99, 199, True), (0, 0, False)], (100, 200), (50, 100)) == \
+        [(49, 99, True), (0, 0, False)]
+
+
+def _spy_on_clicks(monkeypatch):
+    """Record the click sequences the RITM step feeds the model."""
+    from isegm.adaptation import few_shot_trainer as fst
+    seen = []
+    real = fst._build_ritm_points_seq
+    monkeypatch.setattr(fst, '_build_ritm_points_seq',
+                        lambda clicks, device: seen.append(list(clicks)) or real(clicks, device))
+    return fst, seen
+
+
+@pytest.mark.slow
+def test_online_adapter_trains_on_the_recorded_clicks(fresh_ritm, device, synthetic_pair,
+                                                      monkeypatch):
+    fst, seen = _spy_on_clicks(monkeypatch)
+    monkeypatch.setattr(fst, '_sample_click_pixels',
+                        lambda *a, **k: pytest.fail('clicks were sampled, not replayed'))
+    img, gt = synthetic_pair
+    recorded = [(96, 96, True), (20, 20, False), (100, 80, True)]
+    buf = ReplayBuffer(capacity=4)
+    buf.add(img, recorded, gt)
+    adapter = OnlineAdapter(model=fresh_ritm, model_type='ritm', device=device,
+                            config=OnlineAdaptConfig(steps=4, lr=1e-3), log_cb=lambda m: None)
+    rep = adapter.adapt(buf)
+    assert rep['successful_steps'] == 4
+    # The 192 px synthetic image is under cpu_max_side, so coordinates are unchanged.
+    assert seen and all(s == recorded[:len(s)] for s in seen)
+
+
+@pytest.mark.slow
+def test_online_adapter_can_still_sample_clicks(fresh_ritm, device, synthetic_pair,
+                                                monkeypatch):
+    fst, seen = _spy_on_clicks(monkeypatch)
+    img, gt = synthetic_pair
+    recorded = [(96, 96, True)]
+    buf = ReplayBuffer(capacity=4)
+    buf.add(img, recorded, gt)
+    adapter = OnlineAdapter(model=fresh_ritm, model_type='ritm', device=device,
+                            config=OnlineAdaptConfig(steps=2, use_recorded_clicks=False),
+                            log_cb=lambda m: None)
+    adapter.adapt(buf)
+    assert seen and all(s != recorded for s in seen)
+    assert all(sum(p for *_, p in s) == 3 for s in seen)   # n_pos sampled positives
