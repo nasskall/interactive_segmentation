@@ -576,7 +576,7 @@ export default function Workspace({ itemId, me }: Props) {
         </section>
 
         <section className="help">
-          {['1–9 class', ...tools.map((t) => `${TOOL_INFO[t].key.toUpperCase()} ${TOOL_INFO[t].label.toLowerCase()}`)].join(' · ')}
+          {['1–9 class', ...tools.map((t) => `${TOOL_INFO[t].key.toUpperCase()} ${TOOL_INFO[t].label.toLowerCase()}`), '+ / − zoom', '0 fit', 'wheel zoom', 'Space+drag pan'].join(' · ')}
           <br />
           {isClassification ? '[ ] prev/next'
             : 'Wheel zoom · Space/middle-drag pan · Del delete · [ ] prev/next'}
