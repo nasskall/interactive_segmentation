@@ -14,11 +14,19 @@ const FUSION_LABELS: Record<Fusion, string> = {
 
 const key = (m: ModelRef) => `${m.model_type}|${m.checkpoint}`;
 
+/** Model type, plus the checkpoint when another entry has the same type
+ *  (e.g. two RITM checkpoints). */
+function memberLabel(m: ModelRef, all: ModelRef[]): string {
+  const shared = all.filter((o) => o.model_type === m.model_type).length > 1;
+  return shared ? `${m.model_type} (${m.checkpoint.replace(/\.(pth|pt)$/, '')})` : m.model_type;
+}
+
 /** One-line description of the loaded model. */
 export function describeModel(models: ModelInfo): string {
   const c = models.current;
   if (c.model_type !== ENSEMBLE) return `${c.model_type} · ${c.checkpoint ?? ''} · ${models.device}`;
-  const names = (c.members ?? []).map((m) => m.model_type).join(' + ');
+  const members = c.members ?? [];
+  const names = members.map((m) => memberLabel(m, members)).join(' + ');
   return `Ensemble (${names}) · ${FUSION_LABELS[c.fusion ?? 'weighted']}`
     + `${c.tta ? ' · TTA' : ''} · ${models.device}`;
 }
@@ -79,7 +87,7 @@ export default function ModelChooser({ models, busy, buttonLabel, onLoad }: {
               <label key={key(c)} className="check" title={c.checkpoint}>
                 <input type="checkbox" checked={members.has(key(c))} onChange={() => toggle(c)}
                        disabled={busy || (!members.has(key(c)) && chosen.length >= max)} />
-                {c.model_type}
+                {memberLabel(c, candidates)}
               </label>
             ))}
             {candidates.length < 2 && (
