@@ -28,6 +28,10 @@ class SAM2InteractivePredictor:
         self.image_shape = None   # (H, W)
         self.prev_logit = None    # low-res mask for mask-conditioned prediction
         self.box = None           # [x0, y0, x1, y1] box prompt, if any
+        # As in SAMInteractivePredictor: probabilities instead of a 0/1 mask,
+        # and SAM 2's IoU estimate for the returned mask.
+        self.soft = False
+        self.last_score = None
 
     # ------------------------------------------------------------------
     # Interface required by InteractiveController
@@ -91,11 +95,15 @@ class SAM2InteractivePredictor:
                 box=box,
                 mask_input=self.prev_logit,
                 multimask_output=len(clicks_list) == 1 and box is None,
+                return_logits=self.soft,
             )
 
         best_idx = int(np.argmax(scores))
         self.prev_logit = logits[best_idx : best_idx + 1]
+        self.last_score = float(scores[best_idx])
 
+        if self.soft:
+            return (1.0 / (1.0 + np.exp(-np.clip(masks[best_idx], -50, 50)))).astype(np.float32)
         return masks[best_idx].astype(np.float32)
 
     def get_states(self):
