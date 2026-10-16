@@ -227,7 +227,7 @@ def main():
         ctrl.rollback_adapter()
     rolled = evaluate(ctrl, evals, args.max_clicks)
     print(f'  rollback  {fmt(rolled)}')
-    same = all(abs(rolled[k] - base[k]) < 1e-6 for k in base)
+    same = all(abs(rolled[k] - base[k]) < 1e-6 for k in base if k != 's/click')
     print(f'  rollback restores the baseline: {"yes" if same else "NO"}')
 
 

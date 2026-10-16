@@ -107,7 +107,8 @@ class InteractiveController:
 
     @property
     def supports_box(self) -> bool:
-        return hasattr(self.predictor, 'set_box')
+        # An ensemble has set_box but only takes boxes with a SAM member.
+        return getattr(self.predictor, 'supports_box', hasattr(self.predictor, 'set_box'))
 
     def set_box(self, x0, y0, x1, y1):
         """Prompt the current object with a box (SAM / SAM 2 only); clicks

@@ -16,6 +16,7 @@ export interface SessionState {
   clicks: Click[];
   box: [number, number, number, number] | null;
   supports_box: boolean;
+  ensemble_weights: Record<string, number> | null; // ensemble: weight per model, latest click
   object_count: number;
   has_incomplete_object: boolean;
   can_undo: boolean;
@@ -24,12 +25,33 @@ export interface SessionState {
   overlay: string; // data: URL, RGBA PNG
 }
 
+export const ENSEMBLE = 'Ensemble';
+export type Fusion = 'mean' | 'weighted' | 'weighted_conf' | 'staple';
+
+export interface ModelRef {
+  model_type: string;
+  checkpoint: string;
+}
+
 export interface ModelInfo {
   model_types: string[];
   checkpoints: string[];
-  current: { model_type: string; checkpoint: string | null };
+  current: {
+    model_type: string;
+    checkpoint: string | null;
+    supports_box: boolean;
+    // Ensemble only:
+    members?: ModelRef[];
+    fusion?: Fusion;
+    tta?: boolean;
+  };
   device: string;
+  ensemble: { fusions: Fusion[]; max_members: number; candidates: ModelRef[] };
 }
+
+export type LoadModelBody =
+  | ModelRef
+  | { model_type: typeof ENSEMBLE; members: ModelRef[]; fusion: Fusion; tta: boolean };
 
 // ── labelling ──────────────────────────────────────────────────────────────
 
@@ -195,8 +217,7 @@ export async function fetchImageUrl(url: string): Promise<string> {
 export const api = {
   // models + interactive sessions
   getModels: () => request<ModelInfo>('/models'),
-  loadModel: (model_type: string, checkpoint: string) =>
-    request<ModelInfo>('/models/load', json('POST', { model_type, checkpoint })),
+  loadModel: (body: LoadModelBody) => request<ModelInfo>('/models/load', json('POST', body)),
 
   createSession: (file: File) => {
     const form = new FormData();

@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from server.sessions import ModelManager, SessionNotFound, encode_png
+from server.sessions import ENSEMBLE, ModelManager, SessionNotFound, encode_png
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
@@ -45,9 +45,19 @@ class SettingsIn(BaseModel):
     use_zoom_in: Optional[bool] = None
 
 
-class LoadModelIn(BaseModel):
+class EnsembleMemberIn(BaseModel):
     model_type: str
     checkpoint: str
+
+
+class LoadModelIn(BaseModel):
+    """A single model (``checkpoint``), or ``model_type`` "Ensemble" with
+    ``members``, ``fusion`` and ``tta``."""
+    model_type: str
+    checkpoint: Optional[str] = None
+    members: Optional[list[EnsembleMemberIn]] = None
+    fusion: str = 'weighted'
+    tta: bool = True
 
 
 def create_app(manager: ModelManager, static_dir: Optional[Path] = None,
@@ -82,7 +92,13 @@ def create_app(manager: ModelManager, static_dir: Optional[Path] = None,
     @app.post('/api/models/load')
     def load_model(body: LoadModelIn):
         try:
-            manager.load_model(body.model_type, body.checkpoint)
+            if body.model_type == ENSEMBLE:
+                manager.load_ensemble([(m.model_type, m.checkpoint) for m in body.members or []],
+                                      body.fusion, body.tta)
+            elif body.checkpoint is None:
+                raise ValueError('checkpoint is required')
+            else:
+                manager.load_model(body.model_type, body.checkpoint)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except Exception as exc:

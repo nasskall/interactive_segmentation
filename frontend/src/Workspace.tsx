@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AnnotCanvas, { type Tool } from './AnnotCanvas';
 import { api, TASK_LABELS, type Annotation, type Geometry, type Item, type ItemStatus,
-         type LabelClass, type LabelType, type ModelInfo, type Project, type SessionState,
-         type User } from './api';
+         type LabelClass, type LabelType, type LoadModelBody, type ModelInfo, type Project,
+         type SessionState, type User } from './api';
+import ModelChooser, { describeModel, describeWeights } from './ModelChooser';
 import { go, href, useAuthedImage, useImage } from './lib';
 
 const TOOL_INFO: Record<Tool, { label: string; key: string; help: string }> = {
@@ -158,7 +159,7 @@ export default function Workspace({ itemId, me }: Props) {
   const before = useAuthedImage(item?.kind === 'pair' ? item.images.before : null);
   const overlay = useImage(session?.overlay ?? null);
   const index = siblings.findIndex((s) => s.id === itemId);
-  const isSam = models?.current.model_type.startsWith('SAM') ?? false;
+  const supportsBox = models?.current.supports_box ?? false;
 
   // ── running backend calls ───────────────────────────────────────────────
   const run = useCallback(async (label: string, fn: () => Promise<void>) => {
@@ -208,7 +209,10 @@ export default function Workspace({ itemId, me }: Props) {
 
   const assistBox = (x0: number, y0: number, x1: number, y1: number) =>
     run('Box prompt', async () => {
-      if (!isSam) throw new Error('Box prompts need a SAM model; click instead, or switch model');
+      if (!supportsBox) {
+        throw new Error('Box prompts need SAM or SAM 2 (alone or in an ensemble); '
+                        + 'click instead, or switch model');
+      }
       const s = await ensureSession();
       putSession(role, await api.setBox(s.session_id, {
         x0: toSession(s, x0), y0: toSession(s, y0),
@@ -293,9 +297,9 @@ export default function Workspace({ itemId, me }: Props) {
     });
   };
 
-  const loadModel = (modelType: string, checkpoint: string) =>
-    run(`Load ${modelType}`, async () => {
-      setModels(await api.loadModel(modelType, checkpoint));
+  const loadModel = (body: LoadModelBody) =>
+    run(`Load ${body.model_type}`, async () => {
+      setModels(await api.loadModel(body));
       // Loading a model resets every session's current object.
       const fresh: Record<string, SessionState> = {};
       for (const [r, s] of Object.entries(sessions)) fresh[r] = await api.getSession(s.session_id);
@@ -466,6 +470,10 @@ export default function Workspace({ itemId, me }: Props) {
                         disabled={busy || !session?.has_incomplete_object}>
                   Save{cls ? ` as ${cls.name}` : ''} (Enter)
                 </button>
+                {session?.ensemble_weights && (
+                  <p className="meta" title="Weight of each model for the latest click">
+                    Model weights: {describeWeights(session.ensemble_weights)}</p>
+                )}
                 <ModelPicker models={models} admin={me.role === 'admin'} busy={busy}
                              onLoad={loadModel} />
               </>
@@ -619,33 +627,15 @@ function ClassificationView({ image }: { image: HTMLImageElement | null }) {
 
 function ModelPicker({ models, admin, busy, onLoad }: {
   models: ModelInfo | null; admin: boolean; busy: boolean;
-  onLoad: (modelType: string, checkpoint: string) => void;
+  onLoad: (body: LoadModelBody) => void;
 }) {
-  const [type, setType] = useState('');
-  const [ckpt, setCkpt] = useState('');
-  useEffect(() => {
-    if (models) {
-      setType(models.current.model_type);
-      setCkpt(models.current.checkpoint ?? '');
-    }
-  }, [models]);
   if (!models) return null;
-  const current = `${models.current.model_type} · ${models.device}`;
+  const current = describeModel(models);
   if (!admin) return <p className="meta">Model: {current}</p>;
   return (
     <details>
       <summary className="meta">Model: {current}</summary>
-      <label>Type
-        <select value={type} onChange={(e) => setType(e.target.value)} disabled={busy}>
-          {models.model_types.map((t) => <option key={t}>{t}</option>)}
-        </select>
-      </label>
-      <label>Checkpoint
-        <select value={ckpt} onChange={(e) => setCkpt(e.target.value)} disabled={busy}>
-          {models.checkpoints.map((c) => <option key={c}>{c}</option>)}
-        </select>
-      </label>
-      <button disabled={busy || !ckpt} onClick={() => onLoad(type, ckpt)}>Load for everyone</button>
+      <ModelChooser models={models} busy={busy} buttonLabel="Load for everyone" onLoad={onLoad} />
     </details>
   );
 }
