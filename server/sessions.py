@@ -23,14 +23,37 @@ import numpy as np
 from interactive_demo.controller import InteractiveController
 from isegm.inference import utils
 from isegm.inference.predictors import get_predictor
+from isegm.inference.predictors.ensemble import FUSIONS, EnsembleConfig, EnsembleNet
 
+ENSEMBLE = 'Ensemble'
 MODEL_TYPES = [
     'RITM', 'SimpleClick',
     'SAM - ViT-B', 'SAM - ViT-L', 'SAM - ViT-H',
     'SAM2 - Tiny', 'SAM2 - Small', 'SAM2 - Base+', 'SAM2 - Large',
+    ENSEMBLE,
 ]
 SAM_TYPES = {t for t in MODEL_TYPES if t.startswith('SAM')}
 CHECKPOINT_EXTS = ('.pth', '.pt')
+MAX_ENSEMBLE_MEMBERS = 4
+
+
+def guess_model_type(checkpoint: str) -> Optional[str]:
+    """Model type a checkpoint file name suggests, used to offer ensemble
+    members; None if it doesn't look like any supported model."""
+    name = checkpoint.lower()
+    if name.startswith('sam2'):
+        for key, label in (('tiny', 'SAM2 - Tiny'), ('small', 'SAM2 - Small'),
+                           ('base', 'SAM2 - Base+'), ('large', 'SAM2 - Large')):
+            if key in name:
+                return label
+        return None
+    for key, label in (('vit_b', 'SAM - ViT-B'), ('vit_l', 'SAM - ViT-L'),
+                       ('vit_h', 'SAM - ViT-H')):
+        if name.startswith('sam_') and key in name:
+            return label
+    if 'vit' in name and ('cocolvis' in name or 'sbd' in name):
+        return 'SimpleClick'
+    return 'RITM'
 
 MAX_IMAGE_SIDE = 2048
 LIMIT_LONGEST_SIZE = 5000
@@ -135,6 +158,9 @@ class Session:
             ],
             'box': getattr(c.predictor, 'box', None),
             'supports_box': c.supports_box,
+            # Ensemble only: weight each member got for the latest click.
+            'ensemble_weights': (dict(c.predictor.last_weights)
+                                 if getattr(c.predictor, 'last_weights', None) else None),
             'object_count': int(c.object_count),
             'has_incomplete_object': bool(c.is_incomplete_mask),
             'can_undo': bool(c.states),
@@ -161,6 +187,12 @@ class ModelManager:
         self.max_sessions = max_sessions
         self.lock = threading.RLock()
         self._sessions: OrderedDict[str, Session] = OrderedDict()
+        # Loaded networks by (model type, checkpoint), so switching between a
+        # single model and ensembles that use it doesn't reload weights.
+        self._nets: dict[tuple[str, str], object] = {}
+        if checkpoint is not None:
+            self._nets[(model_label, checkpoint)] = net
+        self.ensemble_members: Optional[list[tuple[str, str]]] = None
 
     # ── models ─────────────────────────────────────────────────────────────
 
@@ -171,35 +203,90 @@ class ModelManager:
                       if p.is_file() and p.suffix in CHECKPOINT_EXTS)
 
     def model_info(self) -> dict:
+        checkpoints = self.list_checkpoints()
+        is_ensemble = self.model_label == ENSEMBLE
+        current = {'model_type': self.model_label, 'checkpoint': self.checkpoint,
+                   'supports_box': (self.model_label in SAM_TYPES
+                                    or (is_ensemble and any(t in SAM_TYPES
+                                                            for t, _ in self.ensemble_members)))}
+        if is_ensemble:
+            current.update(
+                members=[{'model_type': t, 'checkpoint': c} for t, c in self.ensemble_members],
+                fusion=self.net.config.fusion, tta=self.net.config.tta)
         return {
             'model_types': MODEL_TYPES,
-            'checkpoints': self.list_checkpoints(),
-            'current': {'model_type': self.model_label, 'checkpoint': self.checkpoint},
+            'checkpoints': checkpoints,
+            'current': current,
             'device': self.device,
+            'ensemble': {
+                'fusions': list(FUSIONS),
+                'max_members': MAX_ENSEMBLE_MEMBERS,
+                # Checkpoints whose file name says which model they are.
+                'candidates': [{'model_type': t, 'checkpoint': c} for c in checkpoints
+                               if (t := guess_model_type(c)) is not None],
+            },
         }
 
-    def load_model(self, model_label: str, checkpoint: str) -> None:
-        if model_label not in MODEL_TYPES:
+    def _check_checkpoint(self, model_label: str, checkpoint: str) -> None:
+        if model_label not in MODEL_TYPES or model_label == ENSEMBLE:
             raise ValueError(f'Unknown model type {model_label!r}')
         # Only files directly inside weights_dir; no path traversal.
         if os.path.basename(checkpoint) != checkpoint or checkpoint not in self.list_checkpoints():
             raise ValueError(f'Unknown checkpoint {checkpoint!r}')
-        path = self.weights_dir / checkpoint
-        with self.lock:
-            net = utils.load_model_by_type(str(path), model_label, self.device)
-            # Build a predictor before committing: a checkpoint can load while
+
+    def _get_net(self, model_label: str, checkpoint: str):
+        key = (model_label, checkpoint)
+        if key not in self._nets:
+            net = utils.load_model_by_type(str(self.weights_dir / checkpoint), model_label,
+                                           self.device)
+            # Build a predictor before caching: a checkpoint can load while
             # its predictor still fails (e.g. the backend package is missing),
             # and switching anyway would break every session and new upload.
             get_predictor(net, device=self.device,
                           **predictor_params_for(model_label, 0.5, True))
-            self.net = net
-            self.model_label = model_label
-            self.checkpoint = checkpoint
-            for s in self._sessions.values():
-                s.controller.predictor_params = predictor_params_for(
-                    model_label, s.prob_thresh, s.use_zoom_in)
-                s.controller.set_net(net)
-                s.controller.reset_last_object(update_image=False)
+            self._nets[key] = net
+        return self._nets[key]
+
+    def _switch(self, net, model_label: str, checkpoint: Optional[str]) -> None:
+        self.net = net
+        self.model_label = model_label
+        self.checkpoint = checkpoint
+        for s in self._sessions.values():
+            s.controller.predictor_params = predictor_params_for(
+                model_label, s.prob_thresh, s.use_zoom_in)
+            s.controller.set_net(net)
+            s.controller.reset_last_object(update_image=False)
+
+    def load_model(self, model_label: str, checkpoint: str) -> None:
+        if model_label == ENSEMBLE:
+            raise ValueError('Load an ensemble with its members')
+        self._check_checkpoint(model_label, checkpoint)
+        with self.lock:
+            net = self._get_net(model_label, checkpoint)
+            self.ensemble_members = None
+            self._switch(net, model_label, checkpoint)
+
+    def load_ensemble(self, members: list[tuple[str, str]], fusion: str = 'weighted',
+                      tta: bool = True) -> None:
+        """Fuse 2..MAX_ENSEMBLE_MEMBERS models, given as (model type,
+        checkpoint) pairs; see isegm.inference.predictors.ensemble."""
+        if not 2 <= len(members) <= MAX_ENSEMBLE_MEMBERS:
+            raise ValueError(f'An ensemble needs 2 to {MAX_ENSEMBLE_MEMBERS} models')
+        if len(set(members)) != len(members):
+            raise ValueError('Each ensemble member must be a different model')
+        if fusion not in FUSIONS:
+            raise ValueError(f"fusion must be one of {', '.join(FUSIONS)}")
+        for label, ckpt in members:
+            self._check_checkpoint(label, ckpt)
+        with self.lock:
+            nets = [self._get_net(label, ckpt) for label, ckpt in members]
+            labels = [label for label, _ in members]
+            names = [label if labels.count(label) == 1 else f'{label} ({ckpt})'
+                     for label, ckpt in members]
+            net = EnsembleNet(list(zip(names, nets)), EnsembleConfig(fusion=fusion, tta=tta))
+            get_predictor(net, device=self.device)
+            self.ensemble_members = list(members)
+            self._switch(net, ENSEMBLE, None)
 
     # ── sessions ───────────────────────────────────────────────────────────
 

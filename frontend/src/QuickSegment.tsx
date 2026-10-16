@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type ModelInfo, type SessionState } from './api';
+import { api, type LoadModelBody, type ModelInfo, type SessionState } from './api';
+import ModelChooser, { describeModel, describeWeights } from './ModelChooser';
 import SegCanvas from './SegCanvas';
 
 export default function QuickSegment() {
   const [models, setModels] = useState<ModelInfo | null>(null);
-  const [modelType, setModelType] = useState('RITM');
-  const [checkpoint, setCheckpoint] = useState('');
   const [session, setSession] = useState<SessionState | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('Load an image to start.');
@@ -17,11 +16,7 @@ export default function QuickSegment() {
 
   useEffect(() => {
     api.getModels()
-      .then((m) => {
-        setModels(m);
-        setModelType(m.current.model_type);
-        setCheckpoint(m.current.checkpoint ?? m.checkpoints[0] ?? '');
-      })
+      .then(setModels)
       .catch((e) => setError(`Backend unreachable: ${e.message}`));
   }, []);
 
@@ -63,9 +58,9 @@ export default function QuickSegment() {
     });
   };
 
-  const onLoadModel = () =>
-    run(`Loading ${modelType}`, async () => {
-      const m = await api.loadModel(modelType, checkpoint);
+  const onLoadModel = (body: LoadModelBody) =>
+    run(`Loading ${body.model_type}`, async () => {
+      const m = await api.loadModel(body);
       setModels(m);
       // Loading a model drops in-progress clicks on the server; resync.
       if (sid) return api.getSession(sid);
@@ -87,7 +82,9 @@ export default function QuickSegment() {
     return () => window.removeEventListener('keydown', onKey);
   }, [busy, sid, undo, finish, reset]);
 
-  const isSam = modelType.startsWith('SAM');
+  // Zoom-in is a RITM / SimpleClick predictor option.
+  const zoomApplies = ['RITM', 'SimpleClick'].includes(models?.current.model_type ?? '');
+  const weights = describeWeights(session?.ensemble_weights);
 
   return (
     <div className="app">
@@ -110,23 +107,12 @@ export default function QuickSegment() {
 
         <section>
           <h2>Model</h2>
-          <label>
-            Type
-            <select value={modelType} onChange={(e) => setModelType(e.target.value)} disabled={busy}>
-              {models?.model_types.map((t) => <option key={t}>{t}</option>)}
-            </select>
-          </label>
-          <label>
-            Checkpoint
-            <select value={checkpoint} onChange={(e) => setCheckpoint(e.target.value)} disabled={busy}>
-              {models?.checkpoints.map((c) => <option key={c}>{c}</option>)}
-            </select>
-          </label>
-          <button onClick={onLoadModel} disabled={busy || !checkpoint}>Load model</button>
           {models && (
-            <p className="meta">
-              Active: {models.current.model_type} · {models.current.checkpoint} · {models.device}
-            </p>
+            <>
+              <ModelChooser models={models} busy={busy} buttonLabel="Load model"
+                            onLoad={onLoadModel} />
+              <p className="meta">Active: {describeModel(models)}</p>
+            </>
           )}
         </section>
 
@@ -147,6 +133,8 @@ export default function QuickSegment() {
               {session.object_count} finished · {session.clicks.length} click(s) on current object
             </p>
           )}
+          {weights && <p className="meta" title="Weight of each model for the latest click">
+            Model weights: {weights}</p>}
         </section>
 
         <section>
@@ -159,7 +147,7 @@ export default function QuickSegment() {
                    onPointerUp={commitThresh} onKeyUp={commitThresh} />
           </label>
           <label className="check">
-            <input type="checkbox" disabled={busy || !sid || isSam}
+            <input type="checkbox" disabled={busy || !sid || !zoomApplies}
                    checked={session?.use_zoom_in ?? true}
                    onChange={(e) => sid && run('Zoom-in',
                      () => api.updateSettings(sid, { use_zoom_in: e.target.checked }))} />

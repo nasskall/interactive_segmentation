@@ -119,8 +119,14 @@ class EnsemblePredictor:
                 m.predictor.set_input_image(self.source_image)
             m.last_prob = None
 
+    @property
+    def supports_box(self) -> bool:
+        return any(m.model_type in SAM_FAMILY for m in self.members)
+
     def set_box(self, box):
         """Box prompt for the members that take one (SAM / SAM 2)."""
+        if not self.supports_box:
+            raise ValueError('Box prompts need a SAM or SAM 2 model in the ensemble')
         self.box = [float(v) for v in box]
         for m in self.members:
             if hasattr(m.predictor, 'set_box'):
