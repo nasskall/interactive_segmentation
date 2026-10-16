@@ -32,13 +32,16 @@ class FakePredictor:
     def set_image(self, image):
         pass
 
-    def predict(self, point_coords, point_labels, box, mask_input, multimask_output):
+    def predict(self, point_coords, point_labels, box, mask_input, multimask_output,
+                return_logits=False):
         self.calls.append(multimask_output)
         self.last = {'points': point_coords, 'box': box}
         n = 3 if multimask_output else 1
         masks = np.zeros((n, H, W), dtype=bool)
         for i in range(n):
             masks[i, : 10 * (i + 1)] = True
+        if return_logits:   # like SAM: full-resolution logits instead of 0/1
+            masks = np.where(masks, 4.0, -4.0).astype(np.float32)
         scores = np.array([0.2, 0.9, 0.5][:n])
         logits = np.stack([np.full((256, 256), float(i)) for i in range(n)])
         return masks, scores, logits
@@ -73,6 +76,19 @@ def test_first_click_uses_best_of_three_candidates(wrapper):
     # as the prompt for the next click.
     assert prob[:20].all() and not prob[20:].any()
     assert (wrapper.prev_logit == 1.0).all() and wrapper.prev_logit.shape == (1, 256, 256)
+
+
+def test_soft_mode_returns_probabilities_and_score(wrapper):
+    clicker = Clicker()
+    clicker.add_click(Click(is_positive=True, coords=(5, 5)))
+    assert wrapper.get_prediction(clicker).dtype == np.float32
+    wrapper.reset_prompts()
+    wrapper.soft = True                       # what the ensemble switches on
+    prob = wrapper.get_prediction(clicker)
+    # Same best candidate (top 20 rows), as sigmoid(+-4) rather than 0/1.
+    assert prob[:20].min() == pytest.approx(0.982, abs=1e-3)
+    assert prob[20:].max() == pytest.approx(0.018, abs=1e-3)
+    assert wrapper.last_score == pytest.approx(0.9)
 
 
 def test_later_clicks_use_a_single_mask(wrapper):
