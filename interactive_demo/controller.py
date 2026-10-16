@@ -250,7 +250,7 @@ class InteractiveController:
                 model=self.net,
                 model_type=self.model_type,
                 device=self.device,
-                config=OnlineAdaptConfig(),
+                config=OnlineAdaptConfig.for_model(self.model_type),
                 log_cb=self._adapter_log_cb,
             )
             self._online_adapter.ensure_injected()

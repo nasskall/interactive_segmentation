@@ -245,3 +245,21 @@ def test_online_adapter_can_still_sample_clicks(fresh_ritm, device, synthetic_pa
     adapter.adapt(buf)
     assert seen and all(s != recorded for s in seen)
     assert all(sum(p for *_, p in s) == 3 for s in seen)   # n_pos sampled positives
+
+
+def test_online_adapt_defaults_per_model():
+    assert (OnlineAdaptConfig.for_model('sam').lr, OnlineAdaptConfig.for_model('sam').steps) \
+        == (2e-4, 30)
+    # Models without tuned settings keep the general defaults.
+    for mt in ('ritm', 'sam2', 'simpleclick', 'unknown'):
+        assert OnlineAdaptConfig.for_model(mt) == OnlineAdaptConfig()
+
+
+def test_controller_uses_the_model_defaults(fresh_ritm, device, monkeypatch):
+    from interactive_demo.controller import InteractiveController
+    from isegm.adaptation import online_adapter
+    monkeypatch.setitem(online_adapter.MODEL_DEFAULTS, 'ritm', {'lr': 1e-5, 'steps': 7})
+    ctrl = InteractiveController(fresh_ritm, device, predictor_params={'brs_mode': 'NoBRS'},
+                                 update_image_callback=lambda *a, **k: None)
+    cfg = ctrl._ensure_online_adapter().config
+    assert (cfg.lr, cfg.steps) == (1e-5, 7)
