@@ -17,8 +17,10 @@ Scores: mean IoU after 1/3/5 clicks and NoC@85/90 (clicks needed to reach
 that IoU; --max-clicks when never reached). Lower NoC is better.
 
 With --model ensemble the members (--members) are fused instead, and every
---fusion method is scored with and without test-time augmentation; there
-is no adaptation step for ensembles.
+--fusion method is scored with and without test-time augmentation. Add
+--adapt to run steps 1-5 on the ensemble instead (one --fusion, default
+STAPLE, no TTA):
+each member is adapted on the recorded clicks with its own defaults.
 
 Run from repo root, e.g.:
     python tools/click_benchmark.py --model ritm --category 0
@@ -169,7 +171,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--model', choices=[*CHECKPOINTS, 'ensemble'], default='ritm')
     ap.add_argument('--members', default='ritm,sam,sam2', help='ensemble members')
-    ap.add_argument('--fusion', default=','.join(FUSIONS), help='ensemble fusion methods')
+    ap.add_argument('--fusion', default=None,
+                    help='ensemble fusion methods (default: all; with --adapt, staple)')
+    ap.add_argument('--adapt', action='store_true',
+                    help='ensemble: adapt the members instead of comparing fusions')
     ap.add_argument('--data', type=Path, default=ROOT / 'datasets' / 'coco128-seg')
     ap.add_argument('--category', type=int, default=0, help='COCO class index (0 = person)')
     ap.add_argument('--min-area', type=float, default=0.03)
@@ -220,10 +225,14 @@ def main():
     ctrl = InteractiveController(net, DEVICE, predictor_params={'brs_mode': 'NoBRS'},
                                  update_image_callback=lambda *a, **k: None)
 
-    if args.model == 'ensemble':
+    if args.model == 'ensemble' and args.adapt:
+        net.config.fusion, net.config.tta = args.fusion or EnsembleConfig.fusion, False
+        if args.sweep_lr:
+            sys.exit('--sweep-lr is for single models')
+    elif args.model == 'ensemble':
         print(f'ensemble of {args.members} on {DEVICE}; {source}: '
               f'{len(evals)} eval objects')
-        for fusion in args.fusion.split(','):
+        for fusion in (args.fusion or ','.join(FUSIONS)).split(','):
             for tta in (False, True):
                 # The predictor reads this config object on every click.
                 net.config.fusion, net.config.tta = fusion, tta
@@ -232,7 +241,9 @@ def main():
                 print(f'  {fusion:<13} tta={"on " if tta else "off"}  {fmt(r)}', flush=True)
         return
 
-    print(f'{args.model} on {DEVICE}; {source}: '
+    name = (f'ensemble of {args.members} ({net.config.fusion})'
+            if args.model == 'ensemble' else args.model)
+    print(f'{name} on {DEVICE}; {source}: '
           f'{len(train)} session objects, {len(evals)} eval objects')
     t = time.time()
     base = evaluate(ctrl, evals, args.max_clicks)
@@ -249,7 +260,8 @@ def main():
           f'{np.mean(session_clicks):.1f} clicks each')
 
     adapter = ctrl._ensure_online_adapter()
-    adapter.config.use_recorded_clicks = not args.sampled_clicks
+    for a in ([m for _, m in adapter.members] if args.model == 'ensemble' else [adapter]):
+        a.config.use_recorded_clicks = not args.sampled_clicks
     print(f'  training on {"sampled" if args.sampled_clicks else "recorded"} clicks')
 
     if args.sweep_lr:

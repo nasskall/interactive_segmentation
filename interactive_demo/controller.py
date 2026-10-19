@@ -8,7 +8,7 @@ from isegm.inference import clicker
 from isegm.inference.predictors import get_predictor
 from isegm.utils.vis import draw_with_blend_and_clicks
 from isegm.adaptation import (
-    OnlineAdapter, OnlineAdaptConfig, ReplayBuffer,
+    EnsembleAdapter, OnlineAdapter, OnlineAdaptConfig, ReplayBuffer,
 )
 from isegm.adaptation.lora import collect_lora_state, load_lora_state
 
@@ -244,8 +244,12 @@ class InteractiveController:
         if self._online_adapter is not None:
             self._online_adapter.log_cb = cb
 
-    def _ensure_online_adapter(self) -> OnlineAdapter:
-        if self._online_adapter is None:
+    def _ensure_online_adapter(self) -> OnlineAdapter | EnsembleAdapter:
+        if self._online_adapter is None and self.model_type == 'ensemble':
+            self._online_adapter = EnsembleAdapter(self.net, self.device,
+                                                   log_cb=self._adapter_log_cb)
+            self._online_adapter.ensure_injected()
+        elif self._online_adapter is None:
             self._online_adapter = OnlineAdapter(
                 model=self.net,
                 model_type=self.model_type,
@@ -259,10 +263,13 @@ class InteractiveController:
     def adapt_now(self) -> dict:
         """Manually-triggered online adapt step over the replay buffer."""
         adapter = self._ensure_online_adapter()
-        sam_p = self.predictor if self.model_type == 'sam' else None
-        sam2_p = self.predictor if self.model_type == 'sam2' else None
-        report = adapter.adapt(self.replay_buffer,
-                               sam_predictor=sam_p, sam2_predictor=sam2_p)
+        if self.model_type == 'ensemble':
+            report = adapter.adapt(self.replay_buffer, self.predictor)
+        else:
+            sam_p = self.predictor if self.model_type == 'sam' else None
+            sam2_p = self.predictor if self.model_type == 'sam2' else None
+            report = adapter.adapt(self.replay_buffer,
+                                   sam_predictor=sam_p, sam2_predictor=sam2_p)
         # The predictor caches features that are now stale relative to the
         # updated mask decoder; rebuild it on the current image.
         self.reset_predictor()
