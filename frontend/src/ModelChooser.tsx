@@ -100,6 +100,9 @@ export default function ModelChooser({ models, busy, buttonLabel, onLoad }: {
               {fusions.map((f) => <option key={f} value={f}>{FUSION_LABELS[f]}</option>)}
             </select>
           </label>
+          {fusion === 'staple' && chosen.length === 2 && (
+            <p className="meta">STAPLE needs three or more models; with two it averages them.</p>
+          )}
           <label className="check">
             <input type="checkbox" checked={tta} onChange={(e) => setTta(e.target.checked)}
                    disabled={busy} />
