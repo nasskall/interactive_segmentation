@@ -58,7 +58,7 @@ Held out from the lesion RITM (trained on the 2018 training split). Built by
 | SAM ViT-B | 0.540 | 0.839 | 4.95 | 6.03 | 5.65 |
 | SAM 2.1 Tiny | 0.620 | 0.845 | 4.12 | 5.50 | **4.42** (mIoU@1 0.752) |
 | SimpleClick ViT-B | 0.500 | 0.883 | 3.73 | 4.67 | **4.15** (mIoU@1 0.559) |
-| Ensemble SimpleClick + SAM 2 (STAPLE) | 0.387 | 0.753 | 4.92 | 5.65 | pending |
+| Ensemble SimpleClick + SAM 2 (mean) | 0.651 | 0.872 | 3.67 | 4.60 | **4.12** (mIoU@1 0.748, NoC@85 3.00) |
 
 ### People: COCO128-seg, 12 held-out images
 
@@ -80,8 +80,11 @@ Held out from the lesion RITM (trained on the 2018 training split). Built by
   benchmarks. Adaptation results must be benchmarked before an adapted
   model is used for production labelling, and every press can be rolled
   back.
-- **Ensembles are not automatically better.** Fused ensembles scored worse
-  than their best member on both benchmarks so far.
+- **Ensembles and fusion.** Before commit `18e3bc8`, STAPLE fusion
+  collapsed to empty masks on two-model ensembles, so earlier ensemble
+  results (worse than their best member) are invalid. With the fix,
+  SimpleClick + SAM 2 matches or beats both members, adapted or not; the
+  margin at NoC@90 over adapted SimpleClick (4.12 vs 4.15) is within noise.
 - **Downscaling.** Sessions work on images resized to at most 2048 px;
   saved masks are scaled back to full resolution, so very fine borders lose
   detail.
