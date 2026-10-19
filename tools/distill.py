@@ -61,6 +61,19 @@ BENCH = ROOT / 'datasets' / 'lesion_bench'
 TARGET_MAX_SIDE = 512     # teacher maps are stored at most this large
 
 
+def pool_names(data_dir: Path, split: str) -> list[str]:
+    return [it['name'] for it in json.loads((data_dir / 'manifest.json').read_text())['items']
+            if it['split'] == split]
+
+
+def load_item(data_dir: Path, name: str) -> tuple[np.ndarray, np.ndarray]:
+    """(RGB image, bool mask) of one pool image, read on demand so the
+    whole pool never sits in memory."""
+    bgr = cv2.imread(str(data_dir / 'images' / f'{name}.jpg'))
+    gt = cv2.imread(str(data_dir / 'masks' / f'{name}.png'), cv2.IMREAD_GRAYSCALE)
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), gt > 127
+
+
 def make_ctrl(net) -> InteractiveController:
     return InteractiveController(net, cb.DEVICE, predictor_params={'brs_mode': 'NoBRS'},
                                  update_image_callback=lambda *a, **k: None)
@@ -122,15 +135,16 @@ def cmd_targets(args):
         {'members': members, 'adapt': not args.no_adapt, 'presses': args.presses,
          'pool': str(args.pool), 'split': args.split, 'max_clicks': args.max_clicks, 'stop_iou': args.stop_iou},
         indent=1))
-    pool = cb.load_manifest(args.pool)[args.split][:args.limit]
-    todo = [o for o in pool if not (out / 'records' / f'{o[0]}.npz').exists()]
+    pool = pool_names(args.pool, args.split)[:args.limit]
+    todo = [n for n in pool if not (out / 'records' / f'{n}.npz').exists()]
     print(f'teacher {members} ({"adapted" if not args.no_adapt else "base"}); '
           f'{len(pool)} pool images, {len(todo)} to label', flush=True)
     if not todo:
         return
     ctrl = build_teacher(members, not args.no_adapt, args.presses, out)
     t0, all_ious = time.time(), []
-    for n, (name, image, gt) in enumerate(todo, 1):
+    for n, name in enumerate(todo, 1):
+        image, gt = load_item(args.pool, name)
         clicks, maps, ious = label_with_teacher(ctrl, image, gt, args.max_clicks, args.stop_iou)
         h, w = gt.shape
         s = min(1.0, TARGET_MAX_SIDE / max(h, w))
@@ -150,29 +164,35 @@ def cmd_targets(args):
 
 # ── stage 2: train the student ────────────────────────────────────────────
 
-def load_records(targets: Path, pool: dict, kind: str) -> list[dict]:
+def load_records(targets: Path, names: list[str]) -> list[dict]:
+    """The clicks of every labelled pool image; targets are read per step
+    (``record_targets``) so memory stays flat however large the pool."""
     recs = []
-    for name, image, gt in pool:
+    for name in names:
         f = targets / 'records' / f'{name}.npz'
-        if not f.exists():
-            continue
-        z = np.load(f)
-        clicks = [(int(y), int(x), bool(p)) for y, x, p in z['clicks']]
-        if kind == 'teacher':
-            tgt = z['maps'].astype(np.float32) / 255.0
-        else:   # expert mask after every click, at the stored map size
-            hh, ww = z['maps'].shape[1:]
-            m = cv2.resize(gt.astype(np.uint8), (ww, hh), interpolation=cv2.INTER_NEAREST)
-            tgt = np.repeat(m[None].astype(np.float32), len(clicks), axis=0)
-        recs.append({'name': name, 'image': image, 'clicks': clicks, 'targets': tgt})
+        if f.exists():
+            clicks = [(int(y), int(x), bool(p)) for y, x, p in np.load(f)['clicks']]
+            recs.append({'name': name, 'clicks': clicks, 'file': f})
     return recs
 
 
-def cached_features(predictor, rec: dict, cache: Path) -> dict:
+def record_targets(rec: dict, kind: str, pool_dir: Path) -> np.ndarray:
+    """uint8 (0..255) target after each click: the teacher's maps, or the
+    expert mask (one copy, broadcast over the clicks)."""
+    maps = np.load(rec['file'])['maps']
+    if kind == 'teacher':
+        return maps
+    hh, ww = maps.shape[1:]
+    _, gt = load_item(pool_dir, rec['name'])
+    m = cv2.resize(gt.astype(np.uint8) * 255, (ww, hh), interpolation=cv2.INTER_NEAREST)
+    return np.broadcast_to(m[None], maps.shape)
+
+
+def cached_features(predictor, rec: dict, cache: Path, pool_dir: Path) -> dict:
     f = cache / f"{rec['name']}.pt"
     if f.exists():
         return torch.load(f, weights_only=True)
-    feats = sam2_features(predictor, rec['image'])
+    feats = sam2_features(predictor, load_item(pool_dir, rec['name'])[0])
     store = {'image_embed': feats['image_embed'].half().cpu(),
              'high_res_feats': [t.half().cpu() for t in feats['high_res_feats']],
              'hw': feats['hw']}
@@ -198,8 +218,8 @@ def cmd_train(args):
     rng = np.random.default_rng(args.seed)
 
     cfg = json.loads((args.targets / 'config.json').read_text())
-    recs = load_records(args.targets, cb.load_manifest(Path(cfg['pool']))[cfg.get('split', 'train')],
-                        args.target)
+    pool_dir = Path(cfg['pool'])
+    recs = load_records(args.targets, pool_names(pool_dir, cfg.get('split', 'train')))
     evals = cb.load_manifest(BENCH)['eval'][:args.n_eval]
     print(f'student SAM 2 on {len(recs)} records, target={args.target}, '
           f'{args.steps} steps x batch {args.batch}, lr {args.lr}, rank {args.rank}', flush=True)
@@ -207,7 +227,8 @@ def cmd_train(args):
     net = cb.load_model('sam2')
     predictor = get_predictor(net, device=cb.DEVICE)
     for i, rec in enumerate(recs):               # fill the feature cache once
-        cached_features(predictor, rec, cache)
+        if not (cache / f"{rec['name']}.pt").exists():
+            cached_features(predictor, rec, cache, pool_dir)
         if (i + 1) % 100 == 0:
             print(f'  cached features {i + 1}/{len(recs)}', flush=True)
 
@@ -244,8 +265,9 @@ def cmd_train(args):
         for _ in range(args.batch):
             rec = recs[rng.integers(len(recs))]
             k = int(rng.integers(1, len(rec['clicks']) + 1))
-            feats = cached_features(predictor, rec, cache)
-            loss = distill_step(net, feats, rec['clicks'], rec['targets'], k, cb.DEVICE)
+            feats = cached_features(predictor, rec, cache, pool_dir)
+            loss = distill_step(net, feats, rec['clicks'],
+                                record_targets(rec, args.target, pool_dir), k, cb.DEVICE)
             (loss / args.batch).backward()
             losses.append(loss.item())
         torch.nn.utils.clip_grad_norm_(params, 1.0)
