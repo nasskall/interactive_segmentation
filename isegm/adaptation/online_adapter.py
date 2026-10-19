@@ -251,6 +251,102 @@ class OnlineAdapter:
             self.log_cb(msg)
 
 
+class EnsembleAdapter:
+    """One ``OnlineAdapter`` per ensemble member, behind the same interface.
+
+    Each member is trained on the user's own clicks towards the accepted
+    mask with its own ``OnlineAdaptConfig.for_model`` defaults, as if it
+    were the only model; the members are then fused as before. A press
+    adapts every member and a rollback undoes the whole press. A net shared
+    by two members is adapted once.
+    """
+
+    model_type = 'ensemble'
+
+    def __init__(self, ensemble, device: str, log_cb: Optional[Callable] = None):
+        self.members: list[tuple[str, OnlineAdapter]] = []
+        seen: set[int] = set()
+        for (name, net), mt in zip(ensemble.members, ensemble.member_types):
+            if id(net) in seen:
+                continue
+            seen.add(id(net))
+            self.members.append((name, OnlineAdapter(
+                model=net, model_type=mt, device=device,
+                config=OnlineAdaptConfig.for_model(mt), log_cb=log_cb)))
+
+    @property
+    def log_cb(self) -> Optional[Callable]:
+        return self.members[0][1].log_cb
+
+    @log_cb.setter
+    def log_cb(self, cb: Optional[Callable]) -> None:
+        for _, a in self.members:
+            a.log_cb = cb
+
+    @property
+    def _injected(self) -> bool:
+        return all(a._injected for _, a in self.members)
+
+    @property
+    def _wrapped(self) -> list[str]:
+        return [f'{name}.{w}' for name, a in self.members for w in a._wrapped]
+
+    @property
+    def _snapshots(self) -> list:
+        # Every member pushes one snapshot per press.
+        return self.members[0][1]._snapshots
+
+    def ensure_injected(self) -> None:
+        for _, a in self.members:
+            a.ensure_injected()
+
+    def reset(self) -> None:
+        for _, a in self.members:
+            a.reset()
+
+    def rollback(self) -> bool:
+        if not self._snapshots:
+            return False
+        for _, a in self.members:
+            a.rollback()
+        return True
+
+    def adapt(self, buffer: ReplayBuffer, ensemble_predictor) -> dict:
+        """Adapt every member; ``ensemble_predictor`` supplies the SAM / SAM 2
+        member predictors. Returns the per-member reports under ``members``
+        plus their totals."""
+        predictors = {m.name: m.predictor for m in ensemble_predictor.members}
+        reports = {}
+        for name, a in self.members:
+            p = predictors.get(name)
+            reports[name] = a.adapt(buffer,
+                                    sam_predictor=p if a.model_type == 'sam' else None,
+                                    sam2_predictor=p if a.model_type == 'sam2' else None)
+        losses = [r['mean_loss'] for r in reports.values() if np.isfinite(r['mean_loss'])]
+        return {
+            'steps': sum(r['steps'] for r in reports.values()),
+            'successful_steps': sum(r.get('successful_steps', 0) for r in reports.values()),
+            'mean_loss': float(np.mean(losses)) if losses else float('nan'),
+            'failures': [f'{n}: {f}' for n, r in reports.items() for f in r.get('failures', [])],
+            'members': reports,
+        }
+
+    def state_dict(self) -> dict:
+        return {'model_type': 'ensemble',
+                'members': {name: a.state_dict() for name, a in self.members}}
+
+    def load_state_dict(self, payload: dict) -> tuple[list, list]:
+        missing, unexpected = [], []
+        for name, a in self.members:
+            if name in payload['members']:
+                m, u = a.load_state_dict(payload['members'][name])
+                missing += m
+                unexpected += u
+            else:
+                missing.append(name)
+        return missing, unexpected
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

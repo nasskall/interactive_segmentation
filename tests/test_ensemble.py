@@ -87,3 +87,42 @@ def test_ensemble_runs_through_the_controller(fresh_ritm, device, synthetic_pair
     np.testing.assert_allclose(ctrl.current_object_prob, first)
     ctrl.finish_object()
     assert ctrl.object_count == 1
+
+
+@pytest.mark.slow
+def test_ensemble_adapts_each_member_and_rolls_back(ritm_checkpoint_path, device, synthetic_pair):
+    import torch
+    from conftest import _fresh_ritm
+    from interactive_demo.controller import InteractiveController
+    from isegm.adaptation import EnsembleAdapter
+    from isegm.adaptation.lora import collect_lora_state
+    a, b = _fresh_ritm(ritm_checkpoint_path, device), _fresh_ritm(ritm_checkpoint_path, device)
+    net = EnsembleNet([('a', a), ('b', b)])
+    ctrl = InteractiveController(net, device, predictor_params={'brs_mode': 'NoBRS'},
+                                 update_image_callback=lambda *a, **k: None)
+    img, gt = synthetic_pair
+    ys, xs = np.where(gt)
+    ctrl.online_recording = True
+    ctrl.set_image(img)
+    ctrl.add_click(int(xs.mean()), int(ys.mean()), is_positive=True)
+    ctrl.finish_object()
+
+    adapter = ctrl._ensure_online_adapter()
+    assert isinstance(adapter, EnsembleAdapter) and len(adapter.members) == 2
+    for _, m in adapter.members:
+        m.config.steps, m.config.lr = 2, 1e-2
+    pre = [collect_lora_state(a), collect_lora_state(b)]
+    rep = ctrl.adapt_now()
+    assert set(rep['members']) == {'a', 'b'} and rep['steps'] == 4
+    post = [collect_lora_state(a), collect_lora_state(b)]
+    for p0, p1 in zip(pre, post):
+        assert any(not torch.allclose(p0[k], p1[k]) for k in p0 if not k.endswith('.scale'))
+
+    assert ctrl.rollback_adapter() is True
+    for p0, net_ in zip(pre, (a, b)):
+        now = collect_lora_state(net_)
+        assert all(torch.allclose(now[k], v) for k, v in p0.items())
+    assert ctrl.rollback_adapter() is False
+
+    # A net shared by two members is adapted once.
+    assert len(EnsembleAdapter(EnsembleNet([('x', a), ('y', a)]), device).members) == 1
