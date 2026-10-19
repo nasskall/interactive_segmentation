@@ -133,6 +133,21 @@ def mask_polygons(mask: np.ndarray) -> list[list[list[int]]]:
 
 # ── COCO ──────────────────────────────────────────────────────────────────
 
+def model_fields(a: dict) -> tuple[str, str]:
+    """(model, sha256) columns for an annotation: the model type and
+    checkpoint that proposed it, members joined with '+' for an ensemble;
+    empty for manual annotations."""
+    m = a.get('model')
+    if not m:
+        return '', ''
+    m = json.loads(m) if isinstance(m, str) else m
+    parts = m.get('members') or [m]
+    name = ' + '.join(f"{p['model_type']} {p.get('checkpoint') or ''}".strip() for p in parts)
+    if m.get('members'):
+        name = f"Ensemble ({m.get('fusion')}): {name}"
+    return name, '+'.join(p.get('sha256') or '' for p in parts)
+
+
 def coco_dict(data: ExportData) -> dict:
     cat_id = data.class_index(1)
     images, annotations = [], []
@@ -155,10 +170,17 @@ def coco_dict(data: ExportData) -> dict:
                 segmentation = [[v for pt in geom['points'] for v in pt]]
             else:
                 segmentation = []
+            model = a.get('model')
             annotations.append({'id': a['id'], 'image_id': item['id'],
                                 'category_id': cat_id[a['class_id']],
                                 'segmentation': segmentation, 'bbox': bbox, 'area': area,
-                                'iscrowd': 0})
+                                'iscrowd': 0,
+                                # Provenance: who labelled it and, if assisted, with which model.
+                                'attributes': {
+                                    'source': a['source'],
+                                    'labeller': data.users.get(a['labeller_id'], ''),
+                                    'model': json.loads(model) if isinstance(model, str) else model,
+                                }})
     return {
         'info': {'description': data.project['name'],
                  'task_type': data.project['task_type']},
@@ -270,7 +292,7 @@ def export_yolo(zf: zipfile.ZipFile, data: ExportData) -> None:
 
 CSV_COLUMNS = ['item_id', 'item_name', 'files', 'width', 'height', 'status', 'assignee',
                'annotation_id', 'class', 'label_type', 'labeller', 'source',
-               'bbox_x', 'bbox_y', 'bbox_w', 'bbox_h', 'area', 'created_at', 'updated_at']
+               'model', 'model_sha256', 'bbox_x', 'bbox_y', 'bbox_w', 'bbox_h', 'area', 'created_at', 'updated_at']
 
 
 def export_csv(data: ExportData) -> str:
@@ -294,7 +316,7 @@ def export_csv(data: ExportData) -> str:
             area = round(ba[1], 2) if ba else ''
             writer.writerow(base + [a['id'], cls['name'], cls['label_type'],
                                     data.users.get(a['labeller_id'], ''), a['source'],
-                                    *box, area, a['created_at'], a['updated_at']])
+                                    *model_fields(a), *box, area, a['created_at'], a['updated_at']])
     return buf.getvalue()
 
 

@@ -6,7 +6,7 @@ import { fetchImageUrl, type Rle } from './api';
 // ── routing ────────────────────────────────────────────────────────────────
 // Routes live in the URL hash so the backend's static file server needs no
 // rewrites: #/ projects · #/projects/3[/classes|team|export|settings] · #/items/12
-// workspace · #/users · #/quick
+// workspace · #/users · #/audit · #/quick
 
 export type ProjectTab = 'items' | 'classes' | 'team' | 'export' | 'settings';
 
@@ -15,6 +15,7 @@ export type Route =
   | { page: 'project'; id: number; tab: ProjectTab }
   | { page: 'item'; id: number }
   | { page: 'users' }
+  | { page: 'audit' }
   | { page: 'quick' };
 
 const TABS: ProjectTab[] = ['items', 'classes', 'team', 'export', 'settings'];
@@ -26,6 +27,7 @@ export function parseRoute(hash: string): Route {
     return { page: 'project', id: Number(parts[1]), tab };
   }
   if (parts[0] === 'users') return { page: 'users' };
+  if (parts[0] === 'audit') return { page: 'audit' };
   if (parts[0] === 'items' && parts[1]) return { page: 'item', id: Number(parts[1]) };
   if (parts[0] === 'quick') return { page: 'quick' };
   return { page: 'projects' };
@@ -36,6 +38,7 @@ export const href = {
   project: (id: number, tab: ProjectTab = 'items') =>
     tab === 'items' ? `#/projects/${id}` : `#/projects/${id}/${tab}`,
   users: () => '#/users',
+  audit: () => '#/audit',
   item: (id: number) => `#/items/${id}`,
   quick: () => '#/quick',
 };
@@ -99,6 +102,16 @@ export function maskCanvas(rle: Rle, color: string): HTMLCanvasElement {
 }
 
 // ── images ─────────────────────────────────────────────────────────────────
+
+/** Saves a blob through a temporary link (exports, masks). */
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 /** Loads an image that needs the auth header; null while loading. */
 export function useAuthedImage(url: string | null): HTMLImageElement | null {

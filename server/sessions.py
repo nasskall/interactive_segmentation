@@ -8,6 +8,7 @@ the ModelManager, so FastAPI's threadpool can call in safely.
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import threading
 import time
@@ -119,6 +120,7 @@ class Session:
     prob_thresh: float = 0.5
     use_zoom_in: bool = True
     last_used: float = field(default_factory=time.time)
+    owner_id: Optional[int] = None          # account that opened it (None without accounts)
 
     @property
     def image(self) -> np.ndarray:
@@ -193,6 +195,40 @@ class ModelManager:
         if checkpoint is not None:
             self._nets[(model_label, checkpoint)] = net
         self.ensemble_members: Optional[list[tuple[str, str]]] = None
+        self._sha256: dict[tuple[str, int, int], str] = {}
+
+    # ── provenance ─────────────────────────────────────────────────────────
+
+    def checkpoint_sha256(self, checkpoint: str) -> Optional[str]:
+        """SHA-256 of a checkpoint in weights_dir, cached by size and mtime."""
+        path = self.weights_dir / checkpoint
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        key = (checkpoint, st.st_size, st.st_mtime_ns)
+        if key not in self._sha256:
+            h = hashlib.sha256()
+            with open(path, 'rb') as f:
+                for chunk in iter(lambda: f.read(1 << 20), b''):
+                    h.update(chunk)
+            self._sha256[key] = h.hexdigest()
+        return self._sha256[key]
+
+    def provenance(self) -> dict:
+        """Which model is proposing masks right now: type, checkpoint file
+        and its SHA-256 (per member for an ensemble). Stored with every
+        assisted annotation (ISO 42001 traceability)."""
+        with self.lock:
+            if self.model_label == ENSEMBLE:
+                return {'model_type': ENSEMBLE, 'fusion': self.net.config.fusion,
+                        'tta': self.net.config.tta,
+                        'members': [{'model_type': t, 'checkpoint': c,
+                                     'sha256': self.checkpoint_sha256(c)}
+                                    for t, c in self.ensemble_members]}
+            return {'model_type': self.model_label, 'checkpoint': self.checkpoint,
+                    'sha256': (self.checkpoint_sha256(self.checkpoint)
+                               if self.checkpoint else None)}
 
     # ── models ─────────────────────────────────────────────────────────────
 
@@ -290,7 +326,8 @@ class ModelManager:
 
     # ── sessions ───────────────────────────────────────────────────────────
 
-    def create_session(self, image_rgb: np.ndarray, filename: str) -> Session:
+    def create_session(self, image_rgb: np.ndarray, filename: str,
+                       owner_id: Optional[int] = None) -> Session:
         original_size = image_rgb.shape[:2]
         image = resize_longest(image_rgb)
         with self.lock:
@@ -301,7 +338,7 @@ class ModelManager:
             )
             ctrl.set_image(image)
             sid = uuid.uuid4().hex
-            session = Session(sid, ctrl, filename, original_size)
+            session = Session(sid, ctrl, filename, original_size, owner_id=owner_id)
             self._sessions[sid] = session
             while len(self._sessions) > self.max_sessions:
                 self._sessions.popitem(last=False)

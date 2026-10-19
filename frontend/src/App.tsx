@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, hasToken, setToken, setUnauthorizedHandler, type User } from './api';
 import { href, useRoute } from './lib';
-import { UsersPage } from './Admin';
+import { AuditPage, UsersPage } from './Admin';
 import { Login, ProjectPage, Projects, Setup } from './Pages';
 import QuickSegment from './QuickSegment';
 import Workspace from './Workspace';
@@ -40,14 +40,15 @@ export default function App() {
 
   const user = auth.state === 'signed-in' ? auth.user : null;
   let body;
-  if (route.page === 'quick') body = <QuickSegment />;
-  else if (error) body = <div className="page"><p className="error-text">{error}</p></div>;
+  if (error) body = <div className="page"><p className="error-text">{error}</p></div>;
   else if (auth.state === 'loading') body = <div className="page muted">Loading…</div>;
   else if (auth.state === 'setup') body = <div className="page"><Setup onSignedIn={signedIn} /></div>;
   else if (!user) body = <div className="page"><Login onSignedIn={signedIn} /></div>;
+  else if (route.page === 'quick') body = <QuickSegment me={user} />;
   else if (route.page === 'project') {
     body = <ProjectPage key={route.id} projectId={route.id} tab={route.tab} me={user} />;
   } else if (route.page === 'users' && user.role === 'admin') body = <UsersPage me={user} />;
+  else if (route.page === 'audit' && user.role === 'admin') body = <AuditPage />;
   else if (route.page === 'item') body = <Workspace key={route.id} itemId={route.id} me={user} />;
   else body = <Projects me={user} />;
 
@@ -56,12 +57,17 @@ export default function App() {
       <header className="topbar">
         <a className="brand" href={href.projects()}>Interactive Labelling</a>
         <nav>
-          <a className={!['quick', 'users'].includes(route.page) ? 'active' : ''}
+          <a className={!['quick', 'users', 'audit'].includes(route.page) ? 'active' : ''}
              href={href.projects()}>Projects</a>
           {user?.role === 'admin' && (
             <a className={route.page === 'users' ? 'active' : ''} href={href.users()}>Users</a>
           )}
-          <a className={route.page === 'quick' ? 'active' : ''} href={href.quick()}>Quick segment</a>
+          {user?.role === 'admin' && (
+            <a className={route.page === 'audit' ? 'active' : ''} href={href.audit()}>Audit log</a>
+          )}
+          {user && (
+            <a className={route.page === 'quick' ? 'active' : ''} href={href.quick()}>Quick segment</a>
+          )}
         </nav>
         <span className="grow" />
         {user && (

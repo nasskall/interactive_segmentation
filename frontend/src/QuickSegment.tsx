@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type LoadModelBody, type ModelInfo, type SessionState } from './api';
+import { api, type LoadModelBody, type ModelInfo, type SessionState, type User } from './api';
+import { saveBlob } from './lib';
 import ModelChooser, { describeModel, describeWeights } from './ModelChooser';
 import SegCanvas from './SegCanvas';
 
-export default function QuickSegment() {
+export default function QuickSegment({ me }: { me: User }) {
   const [models, setModels] = useState<ModelInfo | null>(null);
   const [session, setSession] = useState<SessionState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -109,8 +110,11 @@ export default function QuickSegment() {
           <h2>Model</h2>
           {models && (
             <>
-              <ModelChooser models={models} busy={busy} buttonLabel="Load model"
-                            onLoad={onLoadModel} />
+              {/* The model is shared by every session, so only admins switch it. */}
+              {me.role === 'admin' && (
+                <ModelChooser models={models} busy={busy} buttonLabel="Load for everyone"
+                              onLoad={onLoadModel} />
+              )}
               <p className="meta">Active: {describeModel(models)}</p>
             </>
           )}
@@ -126,8 +130,11 @@ export default function QuickSegment() {
                   disabled={busy || !session?.has_incomplete_object}>Finish object</button>
           <button onClick={() => sid && run('Auto-segment', () => api.autoSegment(sid))}
                   disabled={busy || !sid}>Auto-segment</button>
-          <a className={`button${!sid || busy ? ' disabled' : ''}`}
-             href={sid ? api.maskUrl(sid) : undefined} download>Download mask</a>
+          <button disabled={busy || !sid}
+                  onClick={() => sid && run('Download mask', async () => {
+                    const { blob, filename } = await api.downloadMask(sid);
+                    saveBlob(blob, filename);
+                  })}>Download mask</button>
           {session && (
             <p className="meta">
               {session.object_count} finished · {session.clicks.length} click(s) on current object

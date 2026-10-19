@@ -121,7 +121,27 @@ export interface Annotation {
   labeller_id: number | null;
   geometry: Geometry;
   source: 'manual' | 'assisted';
+  model: AnnotationModel | null; // assisted only: the model that proposed it
   created_at: string;
+}
+
+export interface AnnotationModel {
+  model_type: string;
+  checkpoint?: string | null;
+  sha256?: string | null;
+  fusion?: Fusion;
+  members?: { model_type: string; checkpoint: string; sha256: string | null }[];
+}
+
+export interface AuditEntry {
+  id: number;
+  at: string;
+  user_id: number | null;
+  username: string | null;
+  action: string;
+  target: string;
+  detail: Record<string, unknown>;
+  ip: string;
 }
 
 export interface Progress {
@@ -227,7 +247,11 @@ export const api = {
   getSession: (sid: string) => request<SessionState>(`/sessions/${sid}`),
   deleteSession: (sid: string) => request<void>(`/sessions/${sid}`, { method: 'DELETE' }),
   imageUrl: (sid: string) => `/api/sessions/${sid}/image`,
-  maskUrl: (sid: string) => `/api/sessions/${sid}/mask`,
+  downloadMask: async (sid: string) => {
+    const res = await raw(`/sessions/${sid}/mask`);
+    const name = /filename="?([^";]+)"?/.exec(res.headers.get('Content-Disposition') ?? '')?.[1];
+    return { blob: await res.blob(), filename: name ?? 'mask.png' };
+  },
 
   addClick: (sid: string, click: Click) =>
     request<SessionState>(`/sessions/${sid}/clicks`, json('POST', click)),
@@ -307,6 +331,17 @@ export const api = {
   updateAnnotation: (id: number, body: { class_id?: number; geometry?: Geometry }) =>
     request<Annotation>(`/annotations/${id}`, json('PATCH', body)),
   deleteAnnotation: (id: number) => request<void>(`/annotations/${id}`, { method: 'DELETE' }),
+
+  // audit log (admins)
+  listAudit: (opts: { action?: string; before_id?: number; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.action) q.set('action', opts.action);
+    if (opts.before_id !== undefined) q.set('before_id', String(opts.before_id));
+    if (opts.limit !== undefined) q.set('limit', String(opts.limit));
+    return request<AuditEntry[]>(`/audit?${q}`);
+  },
+  verifyAudit: () => request<{ ok: boolean; rows: number; first_bad_id: number | null }>(
+    '/audit/verify'),
 
   // exports
   exportProject: async (projectId: number, format: ExportFormat,

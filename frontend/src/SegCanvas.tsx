@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import type { Click } from './api';
+import { useAuthedImage } from './lib';
 import { useZoomPan, ZoomControls } from './zoom';
 
 interface Props {
@@ -36,16 +37,11 @@ export default function SegCanvas(props: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const zoom = useZoomPan(stageRef, width, height);
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  // Session images need the auth header; the overlay is a data: URL.
+  const image = useAuthedImage(imageUrl);
   const [overlay, setOverlay] = useState<HTMLImageElement | null>(null);
   const press = useRef<{ x: number; y: number; button: number; moved: boolean } | null>(null);
   const [panning, setPanning] = useState(false);
-
-  useEffect(() => {
-    let live = true;
-    loadImage(imageUrl).then((img) => live && setImage(img)).catch(console.error);
-    return () => { live = false; };
-  }, [imageUrl]);
 
   useEffect(() => {
     let live = true;
