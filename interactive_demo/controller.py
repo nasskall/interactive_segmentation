@@ -297,7 +297,7 @@ class InteractiveController:
 
     def load_adapter(self, path: str) -> tuple[list, list]:
         import torch as _torch
-        payload = _torch.load(path, map_location='cpu', weights_only=False)
+        payload = _torch.load(path, map_location='cpu', weights_only=True)
         if payload.get('model_type') != self.model_type:
             raise ValueError(
                 f"Adapter is for model_type={payload.get('model_type')!r}, "

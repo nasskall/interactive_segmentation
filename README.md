@@ -122,15 +122,18 @@ forwards `/api` to the backend: `http://127.0.0.1:8000` by default, or
 whatever `ISEG_API_URL` is set to (e.g. `http://192.168.1.50:8000`) when the
 backend runs on another machine.
 
-To reach the backend from other machines, bind it to all interfaces with
-`python -m server.main --host 0.0.0.0` and open `http://<server-ip>:8000`.
+To reach the backend from other machines, bind it to a network interface and
+serve HTTPS, so passwords and tokens are encrypted on the network:
+`python -m server.main --host <server-ip> --ssl-certfile cert.pem --ssl-keyfile key.pem`,
+then open `https://<server-ip>:8000`. Without a certificate the server still
+starts but prints a warning.
 
 Main endpoints (all under `/api`):
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/models` | Model types, checkpoints in `model_weights/`, active model |
-| POST | `/models/load` | `{model_type, checkpoint}`: swap the shared model |
+| POST | `/models/load` | `{model_type, checkpoint}`: swap the shared model (admins only) |
 | POST | `/sessions` | Upload an image (multipart `image`), returns session state |
 | GET | `/sessions/{id}/image` | Image that click coordinates refer to (longest side ≤ 2048) |
 | POST | `/sessions/{id}/clicks` | `{x, y, positive}` |
@@ -140,8 +143,9 @@ Main endpoints (all under `/api`):
 | GET | `/sessions/{id}/mask` | Label mask PNG at the original resolution |
 | DELETE | `/sessions/{id}` | Drop the session |
 
-Every editing call returns the full session state, including an RGBA overlay
-as a data URL. Sessions live in memory, at most 16 at a time with the least
+All of these need a signed-in account (see below), and a session is visible
+only to the account that opened it. Every editing call returns the full
+session state, including an RGBA overlay as a data URL. Sessions live in memory, at most 16 at a time with the least
 recently used dropped first. All sessions share one model, and requests run
 one at a time.
 
@@ -157,7 +161,7 @@ images; change it with `--data-dir`). Everything is done in the web app:
   on the *Team* tab, and manage user accounts on the *Users* page.
 - **Labellers** sign in, pick a project and work through their assigned images.
 
-The single-image tool above stays available, without signing in, under
+The single-image tool above is available to every signed-in user under
 *Quick segment*.
 
 In the labelling workspace:
@@ -190,6 +194,17 @@ On first start with an empty `data/`, the server prints a one-time setup
 token. Create the first admin with it via `POST /api/auth/setup`; every other
 call needs the `Authorization: Bearer <token>` header returned by setup or
 `POST /api/auth/login`.
+
+### Security and compliance
+
+The platform supports running under ISO/IEC 27001 and ISO/IEC 42001. It has
+sign-in on every endpoint, role-based access, sign-in throttling, a
+hash-chained audit log (admin page *Audit log*), HTTPS, and security headers.
+Every assisted annotation records the model and checkpoint SHA-256 that
+proposed it, and exports carry this. [docs/compliance/](docs/compliance/README.md)
+maps every Annex A control of both standards to what the application does
+and what the organisation still has to do. It also holds a model register, a
+data register, a draft AI impact assessment and an operating procedure.
 
 ## Tests
 

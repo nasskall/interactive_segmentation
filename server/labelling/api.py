@@ -752,7 +752,7 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         conn.execute('UPDATE annotations SET class_id = ?, geometry = ?, updated_at = ? '
                      'WHERE id = ?', (class_id, json.dumps(geom), now(), ann_id))
         audit.record(conn, 'annotation.update', user=user, target=f'annotation:{ann_id}',
-                     detail={'item_id': it['id'], 'class_id': class_id,
+                     detail={'item_id': it['id'], 'class_id': class_id, 'source': a['source'],
                              'geometry_changed': body.geometry is not None})
         return annotation_out(conn.execute('SELECT * FROM annotations WHERE id = ?',
                                            (ann_id,)).fetchone())
@@ -762,7 +762,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         a, _ = get_annotation(conn, ann_id, user)
         conn.execute('DELETE FROM annotations WHERE id = ?', (ann_id,))
         audit.record(conn, 'annotation.delete', user=user, target=f'annotation:{ann_id}',
-                     detail={'item_id': a['item_id'], 'class_id': a['class_id']})
+                     detail={'item_id': a['item_id'], 'class_id': a['class_id'],
+                             'source': a['source']})
         return Response(status_code=204)
 
     # ── exports ───────────────────────────────────────────────────────────
