@@ -1,9 +1,10 @@
 // Admin screens: projects, classes, uploads, assignment, team progress, exports, users.
 
 import { useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react';
-import { api, TASK_FORMATS, TASK_LABELS, type ExportFormat, type Item, type LabelClass,
-         type LabelType, type Progress, type Project, type TaskType, type User } from './api';
-import { go, href } from './lib';
+import { api, TASK_FORMATS, TASK_LABELS, type AuditEntry, type ExportFormat, type Item,
+         type LabelClass, type LabelType, type Progress, type Project, type TaskType,
+         type User } from './api';
+import { go, href, saveBlob } from './lib';
 
 const TASK_HELP: Record<TaskType, string> = {
   classification: 'One or more labels per image.',
@@ -525,12 +526,7 @@ export function ExportPanel({ project, progress }: { project: Project; progress:
   const download = () => run(async () => {
     const { blob, filename } = await api.exportProject(project.id, format, {
       status: doneOnly ? 'done' : 'all', include_images: withImages });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    saveBlob(blob, filename);
   });
 
   return (
@@ -625,7 +621,7 @@ export function UsersPage({ me }: { me: User }) {
               <td><div className="actions">
                 {resetFor === u.id ? (
                   <span className="row">
-                    <input type="password" placeholder="New password (8+)" value={newPassword}
+                    <input type="password" placeholder="New password (12+)" value={newPassword}
                            autoComplete="new-password" onChange={(e) => setNewPassword(e.target.value)} />
                     <button disabled={busy || newPassword.length < 8}
                             onClick={() => { update(u, { password: newPassword },
@@ -662,7 +658,7 @@ export function UsersPage({ me }: { me: User }) {
                                 autoComplete="off"
                                 onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
           <label>Password<input type="password" value={form.password} autoComplete="new-password"
-                                placeholder="at least 8 characters"
+                                placeholder="at least 12 characters"
                                 onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
           <label>Role<select value={form.role}
                              onChange={(e) => setForm({ ...form, role: e.target.value as User['role'] })}>
@@ -674,6 +670,79 @@ export function UsersPage({ me }: { me: User }) {
                             || !form.display_name.trim() || form.password.length < 8}>Add user</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+// ── audit log ──────────────────────────────────────────────────────────────
+
+const AUDIT_FILTERS: [string, string][] = [
+  ['', 'All events'], ['auth.', 'Sign-ins'], ['user.', 'Accounts'], ['project.', 'Projects'],
+  ['class.', 'Classes'], ['item.', 'Items'], ['annotation.', 'Annotations'], ['model.', 'Models'],
+];
+const AUDIT_PAGE = 100;
+
+function describeDetail(detail: Record<string, unknown>): string {
+  return Object.entries(detail)
+    .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+    .join(' · ');
+}
+
+export function AuditPage() {
+  const [filter, setFilter] = useState('');
+  const [entries, setEntries] = useState<AuditEntry[]>([]);
+  const [more, setMore] = useState(false);
+  const [check, setCheck] = useState<string | null>(null);
+  const { busy, error, run } = useAsync();
+
+  const load = (append: boolean) => run(async () => {
+    const before = append && entries.length ? entries[entries.length - 1].id : undefined;
+    const page = await api.listAudit({ action: filter || undefined, before_id: before,
+                                       limit: AUDIT_PAGE });
+    setEntries(append ? [...entries, ...page] : page);
+    setMore(page.length === AUDIT_PAGE);
+  });
+  useEffect(() => { load(false); }, [filter]);
+
+  const verify = () => run(async () => {
+    const r = await api.verifyAudit();
+    setCheck(r.ok ? `Intact: all ${r.rows} entries chain correctly.`
+                  : `Broken at entry ${r.first_bad_id}: it was edited, or the entry before it was `
+                    + `deleted (${r.rows} entries check out before it).`);
+  });
+
+  return (
+    <div className="page">
+      <h1>Audit log</h1>
+      <p className="muted">Sign-ins, account changes, and every change to projects, items and
+        annotations. Entries are hash-chained, so editing or deleting one in the database shows
+        up when you check the log.</p>
+      <div className="row">
+        <select value={filter} onChange={(e) => setFilter(e.target.value)} disabled={busy}>
+          {AUDIT_FILTERS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+        <button onClick={verify} disabled={busy}>Check integrity</button>
+      </div>
+      {check && <p className={check.startsWith('Intact') ? 'notice' : 'error-text'}>{check}</p>}
+      {error && <p className="error-text">{error}</p>}
+      <table className="items">
+        <thead><tr><th>When (UTC)</th><th>Who</th><th>Event</th><th>Target</th><th>Details</th>
+          <th>Address</th></tr></thead>
+        <tbody>
+          {entries.map((e) => (
+            <tr key={e.id} className="static">
+              <td className="muted">{e.at.replace('T', ' ').replace('+00:00', '')}</td>
+              <td>{e.username ?? <span className="muted">—</span>}</td>
+              <td>{e.action}</td>
+              <td className="muted">{e.target}</td>
+              <td className="small">{describeDetail(e.detail)}</td>
+              <td className="muted">{e.ip}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {entries.length === 0 && !busy && <p className="muted">No events.</p>}
+      {more && <button onClick={() => load(true)} disabled={busy}>Load older</button>}
     </div>
   );
 }

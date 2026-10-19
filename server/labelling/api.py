@@ -11,7 +11,14 @@ Assisted labelling: ``POST /items/{id}/assist`` opens an interactive
 segmentation session (the existing ``/api/sessions`` endpoints) on the
 item's image. Saving an annotation with ``from_session`` turns that
 session's mask into the class's label type (mask, box or polygon) at the
-original resolution, then clears the session for the next object.
+original resolution, then clears the session for the next object. The
+annotation records which model proposed it (``model``: type, checkpoint and
+SHA-256).
+
+Security events and every change to accounts, projects, items and
+annotations go to the hash-chained audit log (``audit.py``), which admins
+read through ``GET /audit`` and check with ``GET /audit/verify``. Repeated
+failed sign-ins lock the username and the client address for a while.
 """
 
 from __future__ import annotations
@@ -23,17 +30,17 @@ import sqlite3
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Literal, Optional
+from typing import Callable, Iterator, Literal, Optional
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from server.labelling import auth, export, geometry
+from server.labelling import audit, auth, export, geometry
 from server.labelling.db import (ALLOWED_LABEL_TYPES, ITEM_STATUSES, ROLES, TASK_TYPES,
                                  Database, now)
 from server.labelling.storage import ImageError, ImageStore, decode, extension
@@ -46,28 +53,32 @@ COLOR_PATTERN = r'^#[0-9a-fA-F]{6}$'
 
 # ── request bodies ────────────────────────────────────────────────────────
 
+MAX_PASSWORD_LENGTH = 1024
+
+
 class SetupIn(BaseModel):
     setup_token: str
     username: str = Field(pattern=USERNAME_PATTERN)
-    password: str = Field(min_length=auth.MIN_PASSWORD_LENGTH)
+    password: str = Field(min_length=auth.MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
     display_name: str = Field(min_length=1, max_length=100)
 
 
 class LoginIn(BaseModel):
-    username: str
-    password: str
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=MAX_PASSWORD_LENGTH)
 
 
 class UserIn(BaseModel):
     username: str = Field(pattern=USERNAME_PATTERN)
-    password: str = Field(min_length=auth.MIN_PASSWORD_LENGTH)
+    password: str = Field(min_length=auth.MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
     display_name: str = Field(min_length=1, max_length=100)
     role: Literal[ROLES] = 'labeller'
 
 
 class UserPatch(BaseModel):
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    password: Optional[str] = Field(default=None, min_length=auth.MIN_PASSWORD_LENGTH)
+    password: Optional[str] = Field(default=None, min_length=auth.MIN_PASSWORD_LENGTH,
+                                    max_length=MAX_PASSWORD_LENGTH)
     role: Optional[Literal[ROLES]] = None
     active: Optional[bool] = None
 
@@ -151,8 +162,9 @@ def item_out(r: sqlite3.Row) -> dict:
 def annotation_out(r: sqlite3.Row) -> dict:
     return {'id': r['id'], 'item_id': r['item_id'], 'class_id': r['class_id'],
             'labeller_id': r['labeller_id'], 'geometry': json.loads(r['geometry']),
-            'source': r['source'], 'created_at': r['created_at'],
-            'updated_at': r['updated_at']}
+            'source': r['source'],
+            'model': json.loads(r['model']) if r['model'] else None,
+            'created_at': r['created_at'], 'updated_at': r['updated_at']}
 
 
 # ── router ────────────────────────────────────────────────────────────────
@@ -165,6 +177,16 @@ class LabellingContext:
     setup_token: Optional[str] = None
     # assist session id -> (item id, user id)
     assist_sessions: dict[str, tuple[int, int]] = field(default_factory=dict)
+    throttle: auth.LoginThrottle = field(default_factory=auth.LoginThrottle)
+    # FastAPI dependencies, shared with the segmentation endpoints in app.py.
+    get_db: Optional[Callable] = None
+    current_user: Optional[Callable] = None
+    admin_user: Optional[Callable] = None
+
+
+async def remember_client_ip(request: Request) -> None:
+    """Router dependency: the client address the audit log records."""
+    audit.client_ip.set(request.client.host if request.client else '')
 
 
 def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, LabellingContext]:
@@ -175,7 +197,7 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         if conn.execute('SELECT COUNT(*) FROM users').fetchone()[0] == 0:
             ctx.setup_token = secrets.token_urlsafe(16)
 
-    router = APIRouter(prefix='/api')
+    router = APIRouter(prefix='/api', dependencies=[Depends(remember_client_ip)])
     bearer = HTTPBearer(auto_error=False)
 
     # ── dependencies ──────────────────────────────────────────────────────
@@ -202,6 +224,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         if user['role'] != 'admin':
             raise HTTPException(403, 'Admins only')
         return user
+
+    ctx.get_db, ctx.current_user, ctx.admin_user = get_db, current_user, admin_user
 
     # ── access helpers ────────────────────────────────────────────────────
 
@@ -266,21 +290,37 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             (body.username, body.display_name, auth.hash_password(body.password), now()))
         ctx.setup_token = None
         user = conn.execute('SELECT * FROM users WHERE id = ?', (cur.lastrowid,)).fetchone()
+        audit.record(conn, 'auth.setup', user=user, target=f"user:{user['id']}")
         return {'token': auth.issue_token(conn, user['id']), 'user': user_out(user)}
 
     @router.post('/auth/login')
     def login(body: LoginIn, conn: sqlite3.Connection = Depends(get_db, scope='function')):
+        keys = (f'user:{body.username.lower()}', f'ip:{audit.client_ip.get()}')
+        wait = ctx.throttle.locked(*keys)
+        if wait:
+            audit.record_now(ctx.db, 'auth.login_blocked', username=body.username)
+            raise HTTPException(429, f'Too many failed sign-ins; try again in '
+                                     f'{int(wait) // 60 + 1} min',
+                                headers={'Retry-After': str(int(wait) + 1)})
         user = conn.execute('SELECT * FROM users WHERE username = ?', (body.username,)).fetchone()
         if (user is None or not user['active']
                 or not auth.verify_password(body.password, user['password_hash'])):
+            locked = ctx.throttle.failed(*keys)
+            audit.record_now(ctx.db, 'auth.login_failed', username=body.username,
+                             detail={'locked': True} if locked else None)
             raise HTTPException(401, 'Wrong username or password')
+        ctx.throttle.succeeded(*keys)
+        audit.record(conn, 'auth.login', user=user)
         return {'token': auth.issue_token(conn, user['id']), 'user': user_out(user)}
 
     @router.post('/auth/logout', status_code=204)
     def logout(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
                conn: sqlite3.Connection = Depends(get_db, scope='function')):
         if creds:
+            user = auth.user_for_token(conn, creds.credentials)
             auth.revoke_token(conn, creds.credentials)
+            if user is not None:
+                audit.record(conn, 'auth.logout', user=user)
         return Response(status_code=204)
 
     @router.get('/auth/me')
@@ -294,7 +334,7 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         return [user_out(r) for r in conn.execute('SELECT * FROM users ORDER BY username')]
 
     @router.post('/users', status_code=201)
-    def create_user(body: UserIn, _=Depends(admin_user), conn=Depends(get_db, scope='function')):
+    def create_user(body: UserIn, admin=Depends(admin_user), conn=Depends(get_db, scope='function')):
         try:
             cur = conn.execute(
                 'INSERT INTO users (username, display_name, password_hash, role, created_at) '
@@ -303,11 +343,14 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                  body.role, now()))
         except sqlite3.IntegrityError:
             raise HTTPException(409, f'Username {body.username!r} is taken')
+        audit.record(conn, 'user.create', user=admin, target=f'user:{cur.lastrowid}',
+                     detail={'username': body.username, 'role': body.role})
         return user_out(conn.execute('SELECT * FROM users WHERE id = ?',
                                      (cur.lastrowid,)).fetchone())
 
     @router.patch('/users/{user_id}')
-    def update_user(user_id: int, body: UserPatch, _=Depends(admin_user), conn=Depends(get_db, scope='function')):
+    def update_user(user_id: int, body: UserPatch, admin=Depends(admin_user),
+                    conn=Depends(get_db, scope='function')):
         u = conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
         if u is None:
             raise HTTPException(404, 'User not found')
@@ -327,6 +370,10 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                          (auth.hash_password(body.password), user_id))
         if body.password is not None or body.active is False:
             conn.execute('DELETE FROM tokens WHERE user_id = ?', (user_id,))
+        changes = {k: v for k, v in body.model_dump(exclude_unset=True).items() if k != 'password'}
+        if body.password is not None:
+            changes['password_changed'] = True
+        audit.record(conn, 'user.update', user=admin, target=f'user:{user_id}', detail=changes)
         return user_out(conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone())
 
     # ── projects ──────────────────────────────────────────────────────────
@@ -352,6 +399,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                  user['id'], now()))
         except sqlite3.IntegrityError:
             raise HTTPException(409, f'A project named {body.name!r} already exists')
+        audit.record(conn, 'project.create', user=user, target=f'project:{cur.lastrowid}',
+                     detail={'name': body.name, 'task_type': body.task_type})
         return project_out(conn.execute('SELECT * FROM projects WHERE id = ?',
                                         (cur.lastrowid,)).fetchone())
 
@@ -371,14 +420,18 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                                  (int(value) if col == 'multi_label' else value, project_id))
         except sqlite3.IntegrityError:
             raise HTTPException(409, f'A project named {body.name!r} already exists')
+        audit.record(conn, 'project.update', user=user, target=f'project:{project_id}',
+                     detail=body.model_dump(exclude_unset=True))
         return project_out(get_project(conn, project_id, user))
 
     @router.delete('/projects/{project_id}', status_code=204)
     def delete_project(project_id: int, user=Depends(admin_user), conn=Depends(get_db, scope='function')):
-        get_project(conn, project_id, user)
+        p = get_project(conn, project_id, user)
         item_ids = [r['id'] for r in conn.execute('SELECT id FROM items WHERE project_id = ?',
                                                   (project_id,))]
         conn.execute('DELETE FROM projects WHERE id = ?', (project_id,))
+        audit.record(conn, 'project.delete', user=user, target=f'project:{project_id}',
+                     detail={'name': p['name'], 'items': len(item_ids)})
         conn.commit()
         for item_id in item_ids:
             ctx.images.delete(item_id)
@@ -432,6 +485,9 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                 (project_id, body.name, body.color.lower(), label_type, position))
         except sqlite3.IntegrityError:
             raise HTTPException(409, f'Class {body.name!r} already exists in this project')
+        audit.record(conn, 'class.create', user=user, target=f'class:{cur.lastrowid}',
+                     detail={'project_id': project_id, 'name': body.name,
+                             'label_type': label_type})
         return class_out(conn.execute('SELECT * FROM classes WHERE id = ?',
                                       (cur.lastrowid,)).fetchone())
 
@@ -448,6 +504,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                     conn.execute(f'UPDATE classes SET {col} = ? WHERE id = ?', (value, class_id))
         except sqlite3.IntegrityError:
             raise HTTPException(409, f'Class {body.name!r} already exists in this project')
+        audit.record(conn, 'class.update', user=user, target=f'class:{class_id}',
+                     detail=body.model_dump(exclude_unset=True))
         return class_out(conn.execute('SELECT * FROM classes WHERE id = ?',
                                       (class_id,)).fetchone())
 
@@ -462,6 +520,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             raise HTTPException(409, f'{used} annotations use this class; '
                                      'pass force=true to delete them too')
         conn.execute('DELETE FROM classes WHERE id = ?', (class_id,))
+        audit.record(conn, 'class.delete', user=user, target=f'class:{class_id}',
+                     detail={'annotations_deleted': used})
         return Response(status_code=204)
 
     # ── items ─────────────────────────────────────────────────────────────
@@ -521,6 +581,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                 item_name = (name if len(decoded) == 1 and name else Path(filename or 'image').stem)
                 created.append(insert_item(conn, project_id, 'single', item_name,
                                            {'image': part}))
+        audit.record(conn, 'item.upload', user=user, target=f'project:{project_id}',
+                     detail={'item_ids': [r['id'] for r in created]})
         return [item_out(r) for r in created]
 
     @router.get('/projects/{project_id}/items')
@@ -551,6 +613,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             raise HTTPException(400, 'Some items are not in this project')
         conn.execute(f'UPDATE items SET assignee_id = ? WHERE id IN ({marks})',
                      [body.user_id, *body.item_ids])
+        audit.record(conn, 'item.assign', user=user, target=f'project:{project_id}',
+                     detail={'assignee_id': body.user_id, 'item_ids': sorted(set(body.item_ids))})
         return {'assigned': len(set(body.item_ids))}
 
     @router.get('/items/{item_id}')
@@ -569,12 +633,16 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                          (body.assignee_id, item_id))
         if body.status is not None:
             conn.execute('UPDATE items SET status = ? WHERE id = ?', (body.status, item_id))
+        audit.record(conn, 'item.update', user=user, target=f'item:{item_id}',
+                     detail=body.model_dump(exclude_unset=True))
         return item_out(conn.execute('SELECT * FROM items WHERE id = ?', (item_id,)).fetchone())
 
     @router.delete('/items/{item_id}', status_code=204)
     def delete_item(item_id: int, user=Depends(admin_user), conn=Depends(get_db, scope='function')):
-        get_item(conn, item_id, user)
+        it = get_item(conn, item_id, user)
         conn.execute('DELETE FROM items WHERE id = ?', (item_id,))
+        audit.record(conn, 'item.delete', user=user, target=f'item:{item_id}',
+                     detail={'project_id': it['project_id'], 'name': it['name']})
         conn.commit()
         ctx.images.delete(item_id)
         return Response(status_code=204)
@@ -599,7 +667,7 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         if image not in files:
             raise HTTPException(400, f"Choose one of: {', '.join(files)}")
         session = ctx.manager.create_session(ctx.images.load_rgb(item_id, files[image]),
-                                             f"{it['name']}_{image}")
+                                             f"{it['name']}_{image}", owner_id=user['id'])
         ctx.assist_sessions = {sid: v for sid, v in ctx.assist_sessions.items()
                                if ctx.manager.has_session(sid)}
         ctx.assist_sessions[session.id] = (item_id, user['id'])
@@ -641,11 +709,11 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             if body.from_session is not None:
                 geom = geometry.mask_to_geometry(mask_from_session(body.from_session, it, user),
                                                  cls['label_type'])
-                source = 'assisted'
+                source, model = 'assisted', json.dumps(ctx.manager.provenance())
             else:
                 geom = geometry.validate(body.geometry or {'type': 'tag'}, cls['label_type'],
                                          it['width'], it['height'])
-                source = 'manual'
+                source, model = 'manual', None
         except geometry.GeometryError as exc:
             raise HTTPException(400, str(exc))
 
@@ -660,9 +728,11 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
 
         ts = now()
         cur = conn.execute(
-            'INSERT INTO annotations (item_id, class_id, labeller_id, geometry, source, '
-            'created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            (item_id, cls['id'], user['id'], json.dumps(geom), source, ts, ts))
+            'INSERT INTO annotations (item_id, class_id, labeller_id, geometry, source, model, '
+            'created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            (item_id, cls['id'], user['id'], json.dumps(geom), source, model, ts, ts))
+        audit.record(conn, 'annotation.create', user=user, target=f'annotation:{cur.lastrowid}',
+                     detail={'item_id': item_id, 'class_id': cls['id'], 'source': source})
         if it['status'] == 'todo':
             conn.execute("UPDATE items SET status = 'in_progress' WHERE id = ?", (item_id,))
         return annotation_out(conn.execute('SELECT * FROM annotations WHERE id = ?',
@@ -681,13 +751,18 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             raise HTTPException(400, str(exc))
         conn.execute('UPDATE annotations SET class_id = ?, geometry = ?, updated_at = ? '
                      'WHERE id = ?', (class_id, json.dumps(geom), now(), ann_id))
+        audit.record(conn, 'annotation.update', user=user, target=f'annotation:{ann_id}',
+                     detail={'item_id': it['id'], 'class_id': class_id,
+                             'geometry_changed': body.geometry is not None})
         return annotation_out(conn.execute('SELECT * FROM annotations WHERE id = ?',
                                            (ann_id,)).fetchone())
 
     @router.delete('/annotations/{ann_id}', status_code=204)
     def delete_annotation(ann_id: int, user=Depends(current_user), conn=Depends(get_db, scope='function')):
-        get_annotation(conn, ann_id, user)
+        a, _ = get_annotation(conn, ann_id, user)
         conn.execute('DELETE FROM annotations WHERE id = ?', (ann_id,))
+        audit.record(conn, 'annotation.delete', user=user, target=f'annotation:{ann_id}',
+                     detail={'item_id': a['item_id'], 'class_id': a['class_id']})
         return Response(status_code=204)
 
     # ── exports ───────────────────────────────────────────────────────────
@@ -721,6 +796,9 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                 'SELECT * FROM classes WHERE project_id = ? ORDER BY position, id', (project_id,))],
             items=items, annotations=annotations,
             users={r['id']: r['display_name'] for r in conn.execute('SELECT * FROM users')})
+        audit.record(conn, 'project.export', user=user, target=f'project:{project_id}',
+                     detail={'format': format, 'status': status, 'include_images': include_images,
+                             'items': len(items)})
         stem = f"{export.safe_name(p['name'])}_{format}"
         if format == 'csv':
             return Response(export.export_csv(data), media_type='text/csv',
@@ -734,5 +812,28 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             raise
         return FileResponse(tmp, media_type='application/zip', filename=f'{stem}.zip',
                             background=BackgroundTask(os.unlink, tmp))
+
+    # ── audit log ─────────────────────────────────────────────────────────
+
+    @router.get('/audit')
+    def read_audit(limit: int = 200, before_id: Optional[int] = None, action: Optional[str] = None,
+                   user_id: Optional[int] = None, _=Depends(admin_user),
+                   conn=Depends(get_db, scope='function')):
+        """Newest first; page with ``before_id``. ``action`` matches a prefix
+        (``auth.`` for every sign-in event)."""
+        sql, args = 'SELECT * FROM audit_log WHERE 1 = 1', []
+        if before_id is not None:
+            sql, args = sql + ' AND id < ?', args + [before_id]
+        if action:
+            sql, args = sql + ' AND substr(action, 1, ?) = ?', args + [len(action), action]
+        if user_id is not None:
+            sql, args = sql + ' AND user_id = ?', args + [user_id]
+        limit = max(1, min(limit, 1000))
+        return [audit.row_out(r) for r in conn.execute(sql + ' ORDER BY id DESC LIMIT ?',
+                                                        args + [limit])]
+
+    @router.get('/audit/verify')
+    def verify_audit(_=Depends(admin_user), conn=Depends(get_db, scope='function')):
+        return audit.verify(conn)
 
     return router, ctx

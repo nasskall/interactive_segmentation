@@ -12,6 +12,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from server.labelling import audit
+
 TASK_TYPES = ('classification', 'detection', 'semantic_segmentation',
               'instance_segmentation', 'change_detection')
 LABEL_TYPES = ('tag', 'box', 'polygon', 'mask')
@@ -86,6 +88,7 @@ CREATE TABLE IF NOT EXISTS annotations (
     labeller_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     geometry    TEXT NOT NULL,
     source      TEXT NOT NULL CHECK (source IN ('manual', 'assisted')),
+    model       TEXT,   -- assisted only: JSON provenance of the model that proposed it
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -103,6 +106,15 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            conn.executescript(audit.SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Bring databases created by earlier versions up to SCHEMA."""
+        cols = {r['name'] for r in conn.execute('PRAGMA table_info(annotations)')}
+        if 'model' not in cols:
+            conn.execute('ALTER TABLE annotations ADD COLUMN model TEXT')
 
     def connect(self) -> sqlite3.Connection:
         # FastAPI may run a request's dependency and endpoint on different
