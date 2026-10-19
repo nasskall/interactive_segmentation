@@ -19,6 +19,10 @@ ISIC2018_Task1-2_Validation_Input.zip and ISIC2018_Task1_Validation_GroundTruth.
 from https://challenge.isic-archive.com/data/#2018 into datasets/isic2018_val/raw:
     python tools/build_lesion_benchmark.py
 Then: python tools/click_benchmark.py --model sam2 --data datasets/lesion_bench
+
+With --all-split NAME every image goes to that one split, e.g. the
+distillation pool from the ISIC 2018 test split:
+    python tools/build_lesion_benchmark.py --all-split train         --images datasets/isic2018_test/raw/ISIC2018_Task1-2_Test_Input         --masks datasets/isic2018_test/raw/ISIC2018_Task1_Test_GroundTruth         --out datasets/lesion_distill
 """
 
 from __future__ import annotations
@@ -44,10 +48,11 @@ def main():
     ap.add_argument('--n-session', type=int, default=20)
     ap.add_argument('--n-eval', type=int, default=40)
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--all-split', default=None, help='put every image in this one split')
     args = ap.parse_args()
 
     names = sorted(p.stem for p in args.images.glob('ISIC_*.jpg'))
-    if len(names) < args.n_session + args.n_eval:
+    if args.all_split is None and len(names) < args.n_session + args.n_eval:
         sys.exit(f'Found {len(names)} images in {args.images}; '
                  f'need {args.n_session + args.n_eval}')
     (args.out / 'images').mkdir(parents=True, exist_ok=True)
@@ -73,16 +78,18 @@ def main():
 
     order = np.random.default_rng(args.seed).permutation(len(items))
     for rank, i in enumerate(order):
-        items[i]['split'] = ('session' if rank < args.n_session else
+        items[i]['split'] = (args.all_split if args.all_split else
+                             'session' if rank < args.n_session else
                              'eval' if rank < args.n_session + args.n_eval else 'reserve')
 
     manifest = {
-        'source': 'ISIC 2018 Task 1 validation split (CC0); held out from the lesion RITM, '
-                  'which was fine-tuned on the ISIC 2018 training split',
+        'source': (f'{args.images.name} with masks from {args.masks.name}' if args.all_split else
+                   'ISIC 2018 Task 1 validation split (CC0); held out from the lesion RITM, '
+                   'which was fine-tuned on the ISIC 2018 training split'),
         'max_side': args.max_side, 'seed': args.seed, 'items': items,
     }
     (args.out / 'manifest.json').write_text(json.dumps(manifest, indent=1))
-    counts = {s: sum(it['split'] == s for it in items) for s in ('session', 'eval', 'reserve')}
+    counts = {s: sum(it['split'] == s for it in items) for s in {it['split'] for it in items}}
     fracs = np.array([it['lesion_frac'] for it in items])
     print(f'{len(items)} images -> {args.out}  {counts}')
     print(f'lesion covers {fracs.min():.1%}..{fracs.max():.1%} of the frame '

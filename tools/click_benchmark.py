@@ -194,6 +194,8 @@ def main():
     ap.add_argument('--sweep-steps', default='10,30,90',
                     help='total training steps at which each --sweep-lr is scored')
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--adapter', type=Path, default=None,
+                    help='LoRA adapter to load first (e.g. a distilled student from tools/distill.py)')
     args = ap.parse_args()
 
     np.random.seed(args.seed)
@@ -224,6 +226,9 @@ def main():
         net = load_model(args.model)
     ctrl = InteractiveController(net, DEVICE, predictor_params={'brs_mode': 'NoBRS'},
                                  update_image_callback=lambda *a, **k: None)
+    if args.adapter is not None:
+        ctrl.load_adapter(str(args.adapter))
+        print(f'loaded adapter {args.adapter}')
 
     if args.model == 'ensemble' and args.adapt:
         net.config.fusion, net.config.tta = args.fusion or EnsembleConfig.fusion, False
