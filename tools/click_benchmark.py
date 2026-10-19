@@ -23,12 +23,16 @@ is no adaptation step for ensembles.
 Run from repo root, e.g.:
     python tools/click_benchmark.py --model ritm --category 0
     python tools/click_benchmark.py --model ensemble --members ritm,sam2
-Data: datasets/coco128-seg (Ultralytics COCO128-seg, YOLO polygon labels).
+Data: datasets/coco128-seg (Ultralytics COCO128-seg, YOLO polygon labels),
+or a folder with a manifest.json and fixed session/eval split, such as the
+lesion set from tools/build_lesion_benchmark.py:
+    python tools/click_benchmark.py --model sam2 --data datasets/lesion_bench
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -82,6 +86,18 @@ def load_objects(data_dir: Path, category: int, min_area: float) -> list[tuple[s
         if best is not None and best.sum() >= min_area * h * w:
             out.append((label.stem, cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), best.astype(bool)))
     return out
+
+
+def load_manifest(data_dir: Path) -> dict[str, list[tuple[str, np.ndarray, np.ndarray]]]:
+    """A benchmark folder with a fixed split (images/, masks/, manifest.json):
+    split name -> [(name, RGB image, bool mask)]."""
+    splits: dict[str, list] = {}
+    for it in json.loads((data_dir / 'manifest.json').read_text())['items']:
+        bgr = cv2.imread(str(data_dir / 'images' / f"{it['name']}.jpg"))
+        gt = cv2.imread(str(data_dir / 'masks' / f"{it['name']}.png"), cv2.IMREAD_GRAYSCALE)
+        splits.setdefault(it['split'], []).append(
+            (it['name'], cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), gt > 127))
+    return splits
 
 
 # ── simulated user ────────────────────────────────────────────────────────
@@ -157,8 +173,10 @@ def main():
     ap.add_argument('--data', type=Path, default=ROOT / 'datasets' / 'coco128-seg')
     ap.add_argument('--category', type=int, default=0, help='COCO class index (0 = person)')
     ap.add_argument('--min-area', type=float, default=0.03)
-    ap.add_argument('--n-train', type=int, default=8)
-    ap.add_argument('--n-eval', type=int, default=12)
+    ap.add_argument('--n-train', type=int, default=None,
+                    help='session objects (default 8, or the whole manifest split)')
+    ap.add_argument('--n-eval', type=int, default=None,
+                    help='eval objects (default 12, or the whole manifest split)')
     ap.add_argument('--max-clicks', type=int, default=10)
     ap.add_argument('--accept-iou', type=float, default=0.90)
     ap.add_argument('--presses', type=int, default=3, help='"Adapt now" presses')
@@ -176,14 +194,24 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    objects = load_objects(args.data, args.category, args.min_area)
-    if len(objects) < args.n_train + args.n_eval:
-        sys.exit(f'Only {len(objects)} objects of class {args.category}; '
-                 f'need {args.n_train + args.n_eval}')
-    rng = np.random.default_rng(args.seed)
-    order = rng.permutation(len(objects))
-    train = [objects[i] for i in order[:args.n_train]]
-    evals = [objects[i] for i in order[args.n_train:args.n_train + args.n_eval]]
+    if (args.data / 'manifest.json').exists():
+        # Fixed split; --n-train/--n-eval only cap it, --category is ignored.
+        splits = load_manifest(args.data)
+        train = splits['session'][:args.n_train]
+        evals = splits['eval'][:args.n_eval]
+        source = args.data.name
+    else:
+        args.n_train = 8 if args.n_train is None else args.n_train
+        args.n_eval = 12 if args.n_eval is None else args.n_eval
+        objects = load_objects(args.data, args.category, args.min_area)
+        if len(objects) < args.n_train + args.n_eval:
+            sys.exit(f'Only {len(objects)} objects of class {args.category}; '
+                     f'need {args.n_train + args.n_eval}')
+        rng = np.random.default_rng(args.seed)
+        order = rng.permutation(len(objects))
+        train = [objects[i] for i in order[:args.n_train]]
+        evals = [objects[i] for i in order[args.n_train:args.n_train + args.n_eval]]
+        source = f'class {args.category}'
 
     if args.model == 'ensemble':
         net = EnsembleNet([(m, load_model(m)) for m in args.members.split(',')])
@@ -193,7 +221,7 @@ def main():
                                  update_image_callback=lambda *a, **k: None)
 
     if args.model == 'ensemble':
-        print(f'ensemble of {args.members} on {DEVICE}; class {args.category}: '
+        print(f'ensemble of {args.members} on {DEVICE}; {source}: '
               f'{len(evals)} eval objects')
         for fusion in args.fusion.split(','):
             for tta in (False, True):
@@ -204,7 +232,7 @@ def main():
                 print(f'  {fusion:<13} tta={"on " if tta else "off"}  {fmt(r)}', flush=True)
         return
 
-    print(f'{args.model} on {DEVICE}; class {args.category}: '
+    print(f'{args.model} on {DEVICE}; {source}: '
           f'{len(train)} session objects, {len(evals)} eval objects')
     t = time.time()
     base = evaluate(ctrl, evals, args.max_clicks)
