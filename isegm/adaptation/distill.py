@@ -70,14 +70,17 @@ def _forward(model, feats: dict, clicks, prev_logit: Optional[torch.Tensor], dev
 def distill_step(model, feats: dict, clicks: list, targets: np.ndarray, k: int, device,
                  bce_weight: float = 1.0, iou_weight: float = 1.0) -> torch.Tensor:
     """Loss for the prediction after ``k`` clicks (1-based) against
-    ``targets[k - 1]`` (H' x W' in [0, 1], resized to the image if needed).
+    ``targets[k - 1]`` (H' x W' in [0, 1], or uint8 0..255; resized to the
+    image if needed).
     Call ``.backward()`` on the result."""
     prev = None
     with torch.no_grad():
         for i in range(1, k):
             _, prev = _forward(model, feats, clicks[:i], prev, device)
     logits, _ = _forward(model, feats, clicks[:k], prev, device)
-    t = torch.as_tensor(np.asarray(targets[k - 1], np.float32), device=device)[None, None]
+    t = np.asarray(targets[k - 1])
+    t = t.astype(np.float32) / 255.0 if t.dtype == np.uint8 else t.astype(np.float32)
+    t = torch.as_tensor(t, device=device)[None, None]
     if t.shape[-2:] != logits.shape[-2:]:
         t = F.interpolate(t, size=logits.shape[-2:], mode='bilinear', align_corners=False)
     return (bce_weight * F.binary_cross_entropy_with_logits(logits, t)
