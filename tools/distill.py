@@ -72,7 +72,12 @@ def build_teacher(members: list[str], adapt: bool, presses: int, out: Path):
     net = (cb.load_model(members[0]) if len(members) == 1
            else EnsembleNet([(m, cb.load_model(m)) for m in members]))
     ctrl = make_ctrl(net)
-    if adapt:
+    saved = out / 'teacher_adapter.pt'
+    if adapt and saved.exists():
+        # Resuming: reuse the exact teacher that labelled the earlier images.
+        ctrl.load_adapter(str(saved))
+        print(f'  teacher adapter loaded from {saved}', flush=True)
+    elif adapt:
         session = cb.load_manifest(BENCH)['session']
         ctrl.online_recording = True
         for _, image, gt in session:
@@ -82,7 +87,7 @@ def build_teacher(members: list[str], adapt: bool, presses: int, out: Path):
         for i in range(presses):
             rep = ctrl.adapt_now()
             print(f'  teacher adapt #{i + 1}: loss {rep["mean_loss"]:.4f}', flush=True)
-        torch.save(ctrl._online_adapter.state_dict(), out / 'teacher_adapter.pt')
+        torch.save(ctrl._online_adapter.state_dict(), saved)
     return ctrl
 
 
