@@ -17,6 +17,12 @@ fused into one. Fusion methods:
                     at each pixel the more certain models count more.
   staple         -- soft STAPLE (Warfield et al., 2004): EM estimate of each
                     model's sensitivity/specificity and the consensus.
+                    Needs 3+ models: with two that disagree there is no
+                    majority to learn who is right, so two-model ensembles
+                    use ``mean`` instead. If the EM collapses (no foreground
+                    at a positive click that every model marks as
+                    foreground, seen with SimpleClick's soft background on
+                    lesions), the result falls back to ``mean`` as well.
 
 Test-time augmentation (``tta=True``):
   * RITM / SimpleClick average the prediction with a horizontally flipped
@@ -254,6 +260,16 @@ def staple(probs: np.ndarray, iters: int = 15, eps: float = 1e-6) -> np.ndarray:
     return post.reshape(probs.shape[1:]).astype(np.float32)
 
 
+def staple_collapsed(post: np.ndarray, probs: np.ndarray, clicks) -> bool:
+    """True when STAPLE puts background under a positive click that every
+    model marks as foreground: the EM fell into a degenerate solution."""
+    for c in clicks or []:
+        y, x = int(c.coords[0]), int(c.coords[1])
+        if c.is_positive and (probs[:, y, x] > 0.5).all() and post[y, x] <= 0.5:
+            return True
+    return False
+
+
 def fuse(probs: np.ndarray, clicks, cfg: EnsembleConfig) -> tuple[np.ndarray, list[float]]:
     """``probs``: (n_models, H, W) in [0, 1]. Returns the fused map and the
     global weight given to each model (uniform for mean / STAPLE)."""
@@ -261,7 +277,12 @@ def fuse(probs: np.ndarray, clicks, cfg: EnsembleConfig) -> tuple[np.ndarray, li
     if cfg.fusion == 'mean' or n == 1:
         return probs.mean(axis=0), [1.0 / n] * n
     if cfg.fusion == 'staple':
-        return staple(probs, cfg.staple_iters), [1.0 / n] * n
+        if n < 3:
+            return probs.mean(axis=0), [1.0 / n] * n
+        post = staple(probs, cfg.staple_iters)
+        if staple_collapsed(post, probs, clicks):
+            return probs.mean(axis=0), [1.0 / n] * n
+        return post, [1.0 / n] * n
     w = reliability_weights(probs, clicks, cfg)
     if cfg.fusion == 'weighted':
         return np.tensordot(w, probs, axes=1).astype(np.float32), w.tolist()

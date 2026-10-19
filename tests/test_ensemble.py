@@ -54,6 +54,23 @@ def test_staple_agrees_with_unanimous_models():
     np.testing.assert_array_equal(post > 0.5, GOOD > 0.5)
 
 
+def test_staple_with_two_models_is_the_mean():
+    probs = np.stack([GOOD, BAD])
+    fused, _ = fuse(probs, CLICKS, EnsembleConfig(fusion='staple'))
+    np.testing.assert_allclose(fused, probs.mean(axis=0))
+
+
+def test_collapsed_staple_falls_back_to_the_mean(monkeypatch):
+    from isegm.inference.predictors import ensemble
+    probs = np.stack([GOOD, GOOD2, BAD])
+    # The degenerate EM solution seen on lesions: background everywhere.
+    monkeypatch.setattr(ensemble, 'staple', lambda p, iters: np.zeros(p.shape[1:], np.float32))
+    assert ensemble.staple_collapsed(np.zeros_like(GOOD), probs, CLICKS)
+    assert not ensemble.staple_collapsed(GOOD, probs, CLICKS)
+    fused, _ = fuse(probs, CLICKS, EnsembleConfig(fusion='staple'))
+    np.testing.assert_allclose(fused, probs.mean(axis=0))
+
+
 def test_pin_clicks():
     prob = np.full((20, 20), 0.5, np.float32)
     pin_clicks(prob, [Click(True, (5, 5)), Click(False, (15, 15))], 2)
