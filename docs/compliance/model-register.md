@@ -60,6 +60,29 @@ Held out from the lesion RITM (trained on the 2018 training split). Built by
 | SimpleClick ViT-B | 0.500 | 0.883 | 3.73 | 4.67 | **4.15** (mIoU@1 0.559) |
 | Ensemble SimpleClick + SAM 2 (mean) | 0.651 | 0.872 | 3.67 | 4.60 | **4.12** (mIoU@1 0.748, NoC@85 3.00) |
 
+### Fine-tuned SAM 2 students (experiment, 2026-10-20)
+
+SAM 2.1 Tiny with LoRA (rank 8) on the prompt encoder and mask decoder,
+trained by `tools/distill.py train` for 2000 steps on the 1000 images of
+the ISIC 2018 Task 1 **test** split (disjoint from the validation images
+above). The robot's clicks are placed using the expert masks in both runs.
+"Distilled" learns from the adapted SimpleClick + SAM 2 teacher's soft
+masks; "control" learns from the expert masks directly. Same 40 evaluation
+images as above. Neither is loaded by the web server; register the adapter
+file here before it is ever used for labelling.
+
+| Model | mIoU@1 | mIoU@5 | NoC@85 | NoC@90 |
+|---|---|---|---|---|
+| SAM 2.1 Tiny (base) | 0.620 | 0.845 | 4.12 | 5.50 |
+| Teacher (adapted ensemble) | 0.748 | 0.913 | 3.00 | 4.12 |
+| Distilled student (best, step 1000) | 0.761 | 0.908 | 2.73 | 3.77 |
+| Control student (step 2000) | **0.861** | **0.935** | **1.80** | **2.52** |
+
+The distilled student beats its teacher but is capped by it (the teacher's
+masks average 0.90 IoU against the experts). Training on expert masks is
+clearly better when they exist; distillation is only worth using where no
+expert masks are available.
+
 ### People: COCO128-seg, 12 held-out images
 
 | Model | NoC@90 | Adapted NoC@90 |
