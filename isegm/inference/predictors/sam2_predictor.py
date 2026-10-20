@@ -27,6 +27,11 @@ class SAM2InteractivePredictor:
         self.original_image = None
         self.image_shape = None   # (H, W)
         self.prev_logit = None    # low-res mask for mask-conditioned prediction
+        self.box = None           # [x0, y0, x1, y1] box prompt, if any
+        # As in SAMInteractivePredictor: probabilities instead of a 0/1 mask,
+        # and SAM 2's IoU estimate for the returned mask.
+        self.soft = False
+        self.last_score = None
 
     # ------------------------------------------------------------------
     # Interface required by InteractiveController
@@ -38,6 +43,7 @@ class SAM2InteractivePredictor:
         ----------
         image : np.ndarray  H x W x 3, dtype uint8, RGB order.
         """
+        self.source_image = image   # as given, to recognise the same image later
         if image.dtype != np.uint8:
             image = np.clip(image * 255, 0, 255).astype(np.uint8)
         self.original_image = image
@@ -45,6 +51,16 @@ class SAM2InteractivePredictor:
         with torch.inference_mode():
             self.sam2_predictor.set_image(image)
         self.prev_logit = None
+        self.box = None
+
+    def reset_prompts(self):
+        """Forget clicks, box and mask prompt; keep the image embedding."""
+        self.prev_logit = None
+        self.box = None
+
+    def set_box(self, box):
+        """Box prompt [x0, y0, x1, y1] used with the clicks from now on."""
+        self.box = [float(v) for v in box]
 
     def get_prediction(self, clicker, prev_mask=None):
         """
@@ -53,7 +69,7 @@ class SAM2InteractivePredictor:
         np.ndarray  H x W float32 in [0, 1] — probability map.
         """
         clicks_list = clicker.get_clicks()
-        if not clicks_list:
+        if not clicks_list and self.box is None:
             return np.zeros(self.image_shape, dtype=np.float32)
 
         # RITM stores clicks as (row, col) = (y, x); SAM 2 expects (x, y).
@@ -64,29 +80,38 @@ class SAM2InteractivePredictor:
             point_coords.append([x, y])
             point_labels.append(1 if click.is_positive else 0)
 
-        point_coords = np.array(point_coords, dtype=np.float32)
-        point_labels = np.array(point_labels, dtype=np.int32)
+        has_points = bool(point_coords)
+        point_coords = np.array(point_coords, dtype=np.float32) if has_points else None
+        point_labels = np.array(point_labels, dtype=np.int32) if has_points else None
+        box = np.array(self.box, dtype=np.float32) if self.box is not None else None
 
         # A single click is ambiguous, so ask for three candidates and keep
-        # the best-scoring one; later clicks use a single mask (see the
-        # matching note in sam_predictor.py).
+        # the best-scoring one; more clicks, or a box, use a single mask
+        # (see the matching note in sam_predictor.py).
         with torch.inference_mode():
             masks, scores, logits = self.sam2_predictor.predict(
                 point_coords=point_coords,
                 point_labels=point_labels,
+                box=box,
                 mask_input=self.prev_logit,
-                multimask_output=len(clicks_list) == 1,
+                multimask_output=len(clicks_list) == 1 and box is None,
+                **({'return_logits': True} if self.soft else {}),
             )
 
         best_idx = int(np.argmax(scores))
         self.prev_logit = logits[best_idx : best_idx + 1]
+        self.last_score = float(scores[best_idx])
 
+        if self.soft:
+            return (1.0 / (1.0 + np.exp(-np.clip(masks[best_idx], -50, 50)))).astype(np.float32)
         return masks[best_idx].astype(np.float32)
 
     def get_states(self):
         return {
-            'prev_logit': self.prev_logit.copy() if self.prev_logit is not None else None
+            'prev_logit': self.prev_logit.copy() if self.prev_logit is not None else None,
+            'box': self.box,
         }
 
     def set_states(self, states):
         self.prev_logit = states['prev_logit']
+        self.box = states.get('box')

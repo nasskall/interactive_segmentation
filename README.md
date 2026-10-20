@@ -74,6 +74,16 @@ for other RITM weights, treat any mirror as unvetted: PyTorch checkpoints are
 pickle files and can execute code on load. The loader here uses
 `weights_only=True`, which is a real safeguard. Leave it on.
 
+For general-purpose (non-lesion) images, the original COCO+LVIS HRNet-18
+checkpoint `coco_lvis_h18_itermask.pth` is mirrored in a release of
+[lucasew/ritm_annotation](https://github.com/lucasew/ritm_annotation/releases/download/0.0.1/coco_lvis_h18_itermask.pth).
+This is a third-party copy: its SHA-256,
+`5f69cfce354d1507e3850bfc39ee7057c8dd27b6a4910d1d2dc724916b9ee32b`, has been
+listed unchanged in that project's README since version 0.0.8, but there is no
+remaining official hash to compare against. The file references only tensor
+storage and `OrderedDict`, so it loads under `weights_only=True`. Put it in
+`model_weights/`; it appears as a second RITM model.
+
 ## Run
 
 ```bash
@@ -112,27 +122,89 @@ forwards `/api` to the backend: `http://127.0.0.1:8000` by default, or
 whatever `ISEG_API_URL` is set to (e.g. `http://192.168.1.50:8000`) when the
 backend runs on another machine.
 
-To reach the backend from other machines, bind it to all interfaces with
-`python -m server.main --host 0.0.0.0` and open `http://<server-ip>:8000`.
+To reach the backend from other machines, bind it to a network interface and
+serve HTTPS, so passwords and tokens are encrypted on the network:
+`python -m server.main --host <server-ip> --ssl-certfile cert.pem --ssl-keyfile key.pem`,
+then open `https://<server-ip>:8000`. Without a certificate the server still
+starts but prints a warning.
 
 Main endpoints (all under `/api`):
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/models` | Model types, checkpoints in `model_weights/`, active model |
-| POST | `/models/load` | `{model_type, checkpoint}`: swap the shared model |
+| POST | `/models/load` | `{model_type, checkpoint}`: swap the shared model (admins only) |
 | POST | `/sessions` | Upload an image (multipart `image`), returns session state |
 | GET | `/sessions/{id}/image` | Image that click coordinates refer to (longest side ≤ 2048) |
 | POST | `/sessions/{id}/clicks` | `{x, y, positive}` |
+| POST | `/sessions/{id}/box` | `{x0, y0, x1, y1}`: box prompt (SAM / SAM 2 only) |
 | POST | `/sessions/{id}/undo`, `/finish`, `/reset`, `/auto-segment` | Editing actions |
 | PATCH | `/sessions/{id}/settings` | `{prob_thresh, use_zoom_in}` |
 | GET | `/sessions/{id}/mask` | Label mask PNG at the original resolution |
 | DELETE | `/sessions/{id}` | Drop the session |
 
-Every editing call returns the full session state, including an RGBA overlay
-as a data URL. Sessions live in memory, at most 16 at a time with the least
+All of these need a signed-in account (see below), and a session is visible
+only to the account that opened it. Every editing call returns the full
+session state, including an RGBA overlay as a data URL. Sessions live in memory, at most 16 at a time with the least
 recently used dropped first. All sessions share one model, and requests run
 one at a time.
+
+### Labelling projects
+
+The server also stores labelling projects for teams: users, projects, classes,
+images and annotations, kept in `data/` (a SQLite database plus the uploaded
+images; change it with `--data-dir`). Everything is done in the web app:
+
+- **Admins** create projects (task type and protocol), define classes with
+  their colours and label types, upload images (or before/after pairs), assign
+  them to labellers one by one or spread evenly, follow progress per labeller
+  on the *Team* tab, and manage user accounts on the *Users* page.
+- **Labellers** sign in, pick a project and work through their assigned images.
+
+The single-image tool above is available to every signed-in user under
+*Quick segment*.
+
+In the labelling workspace:
+
+| Task | Tools |
+|---|---|
+| Classification | Class buttons or keys 1–9 tag the image (one tag, or several for multi-label projects) |
+| Detection | Drag a box; or *Assist*: click the object and the model's mask is saved as a tight box |
+| Segmentation | *Assist*: click to add, right-click to remove, drag a box to prompt SAM, Enter saves; or draw a *Polygon* |
+| Change detection | The same tools on the *after* image, with *Before*/*After* and a *Compare* slider |
+
+The model encodes each image when it opens, so clicks respond at once
+afterwards. Wheel zooms, Space-drag or middle-drag pans, `[` `]` move between
+images, and *Mark done & next* jumps to the next unfinished one.
+
+- **Task types:** classification (single- or multi-label), object detection,
+  semantic and instance segmentation, and change detection on before/after
+  image pairs.
+- **Classes:** name, colour and label type (`tag`, `box`, `polygon` or
+  `mask`), limited to what the project's task type uses.
+- **Users:** admins manage projects and assign images; labellers see only the
+  images assigned to them. Each project has a written protocol, and every
+  annotation records who made it and whether a model assisted.
+- **Assisted labelling:** `POST /api/items/{id}/assist` opens a segmentation
+  session on a project image. Click with any loaded model, then save with
+  `{"class_id": ..., "from_session": "<session id>"}` and the mask is stored as
+  the class's label type (mask, bounding box or polygon) at full resolution.
+
+On first start with an empty `data/`, the server prints a one-time setup
+token. Create the first admin with it via `POST /api/auth/setup`; every other
+call needs the `Authorization: Bearer <token>` header returned by setup or
+`POST /api/auth/login`.
+
+### Security and compliance
+
+The platform supports running under ISO/IEC 27001 and ISO/IEC 42001. It has
+sign-in on every endpoint, role-based access, sign-in throttling, a
+hash-chained audit log (admin page *Audit log*), HTTPS, and security headers.
+Every assisted annotation records the model and checkpoint SHA-256 that
+proposed it, and exports carry this. [docs/compliance/](docs/compliance/README.md)
+maps every Annex A control of both standards to what the application does
+and what the organisation still has to do. It also holds a model register, a
+data register, a draft AI impact assessment and an operating procedure.
 
 ## Tests
 

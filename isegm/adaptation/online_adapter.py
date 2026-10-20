@@ -5,8 +5,11 @@ User flow:
   1. Toggle "Online adapt from clicks" → buffer recording on.
   2. Segment images normally; each ``finish_object`` pushes a buffer entry.
   3. Click "Adapt now" → run K SGD steps against the buffer with the same
-     LoRA config used by ``few_shot_trainer``. State is snapshotted before
-     stepping so "Rollback last" can revert.
+     LoRA config used by ``few_shot_trainer``. Each step replays the user's
+     own recorded clicks for one object (a random prefix of the sequence,
+     see ``few_shot_trainer._click_rounds``) and trains towards the mask
+     the user accepted. State is snapshotted before stepping so "Rollback
+     last" can revert.
 
 No automatic adaptation — every update is explicit.
 """
@@ -21,9 +24,7 @@ import torch
 import torch.nn.functional as F
 
 from .few_shot_trainer import (
-    _sample_click_pixels,
-    _build_ritm_points_nd,
-    _soft_iou,
+    _scale_clicks,
     _step_ritm_family,
     _step_sam,
     _step_sam2,
@@ -47,6 +48,39 @@ class OnlineAdaptConfig:
     iou_weight: float = 1.0
     cpu_max_side: int = 384         # extra-conservative on CPU for live UX
     cuda_max_side: int = 768
+    # Train on the user's recorded clicks; False samples clicks from the
+    # accepted mask instead (the earlier behaviour, kept for comparison).
+    use_recorded_clicks: bool = True
+
+    @classmethod
+    def for_model(cls, model_type: str) -> 'OnlineAdaptConfig':
+        """Defaults tuned for ``model_type`` (see MODEL_DEFAULTS)."""
+        return cls(**MODEL_DEFAULTS.get(model_type, {}))
+
+
+# Per-model overrides of OnlineAdaptConfig, from tools/click_benchmark.py
+# --sweep-lr on COCO128-seg people (8 session objects, 12 held out):
+#   sam: lr 2e-4 x 30 steps was the only setting no worse than the
+#        unadapted model on any measure (NoC@90 7.33 -> 5.33, mIoU@1
+#        0.33 -> 0.51); the old 5e-4 x 90 steps made it worse (NoC@90 9.08).
+#   ritm: (lesion checkpoint) no setting was a clear win on photos of people.
+#        lr 2e-4 is the safe choice: one 30-step press is about neutral
+#        (NoC@90 7.42 -> 7.33), three reach the best measured setting
+#        (NoC@90 6.50, mIoU@1 0.577 -> 0.547), whereas 5e-4 degraded with
+#        repeated presses (mIoU@1 0.48 after 90 steps). Applies to every RITM
+#        checkpoint; only the lesion one was swept.
+#   sam2: lr 2e-4 x 30 steps gave the best NoC@85/90 (3.08/5.42 -> 2.67/4.50,
+#        mIoU@1 0.62 -> 0.72); 5e-4 x 30 reached only NoC@90 4.92.
+#   simpleclick: adaptation never clearly helped (sessions are short, about
+#        2 clicks per object, so it over-fits); 5e-4 x 30 made it much worse
+#        (NoC@90 3.75 -> 6.83). lr 1e-4 x 10 steps is the only neutral setting
+#        (NoC@90 3.67), so a press barely changes the model.
+MODEL_DEFAULTS: dict[str, dict] = {
+    'sam': {'lr': 2e-4, 'steps': 30},
+    'sam2': {'lr': 2e-4, 'steps': 30},
+    'ritm': {'lr': 2e-4, 'steps': 30},
+    'simpleclick': {'lr': 1e-4, 'steps': 10},
+}
 
 
 class OnlineAdapter:
@@ -164,6 +198,9 @@ class OnlineAdapter:
         for step in range(self.config.steps):
             entry = entries[np.random.randint(len(entries))]
             image_np, gt_np = _resize_pair(entry.image, entry.accepted_mask, max_side)
+            user_clicks = None
+            if self.config.use_recorded_clicks and entry.clicks:
+                user_clicks = _scale_clicks(entry.clicks, entry.shape(), gt_np.shape)
 
             optimizer.zero_grad()
             cfg_for_step = _StepConfig(
@@ -174,13 +211,13 @@ class OnlineAdapter:
             try:
                 if self.model_type in ('ritm', 'simpleclick'):
                     step_losses = _step_ritm_family(self.model, image_np, gt_np,
-                                                    cfg_for_step, self.device)
+                                                    cfg_for_step, self.device, user_clicks)
                 elif self.model_type == 'sam':
                     step_losses = _step_sam(sam_predictor, image_np, gt_np,
-                                            cfg_for_step, self.device)
+                                            cfg_for_step, self.device, user_clicks)
                 elif self.model_type == 'sam2':
                     step_losses = _step_sam2(sam2_predictor, image_np, gt_np,
-                                             cfg_for_step, self.device)
+                                             cfg_for_step, self.device, user_clicks)
                 else:
                     raise ValueError(f"Unsupported model_type: {self.model_type}")
             except Exception as exc:
@@ -212,6 +249,102 @@ class OnlineAdapter:
     def _log(self, msg: str) -> None:
         if self.log_cb:
             self.log_cb(msg)
+
+
+class EnsembleAdapter:
+    """One ``OnlineAdapter`` per ensemble member, behind the same interface.
+
+    Each member is trained on the user's own clicks towards the accepted
+    mask with its own ``OnlineAdaptConfig.for_model`` defaults, as if it
+    were the only model; the members are then fused as before. A press
+    adapts every member and a rollback undoes the whole press. A net shared
+    by two members is adapted once.
+    """
+
+    model_type = 'ensemble'
+
+    def __init__(self, ensemble, device: str, log_cb: Optional[Callable] = None):
+        self.members: list[tuple[str, OnlineAdapter]] = []
+        seen: set[int] = set()
+        for (name, net), mt in zip(ensemble.members, ensemble.member_types):
+            if id(net) in seen:
+                continue
+            seen.add(id(net))
+            self.members.append((name, OnlineAdapter(
+                model=net, model_type=mt, device=device,
+                config=OnlineAdaptConfig.for_model(mt), log_cb=log_cb)))
+
+    @property
+    def log_cb(self) -> Optional[Callable]:
+        return self.members[0][1].log_cb
+
+    @log_cb.setter
+    def log_cb(self, cb: Optional[Callable]) -> None:
+        for _, a in self.members:
+            a.log_cb = cb
+
+    @property
+    def _injected(self) -> bool:
+        return all(a._injected for _, a in self.members)
+
+    @property
+    def _wrapped(self) -> list[str]:
+        return [f'{name}.{w}' for name, a in self.members for w in a._wrapped]
+
+    @property
+    def _snapshots(self) -> list:
+        # Every member pushes one snapshot per press.
+        return self.members[0][1]._snapshots
+
+    def ensure_injected(self) -> None:
+        for _, a in self.members:
+            a.ensure_injected()
+
+    def reset(self) -> None:
+        for _, a in self.members:
+            a.reset()
+
+    def rollback(self) -> bool:
+        if not self._snapshots:
+            return False
+        for _, a in self.members:
+            a.rollback()
+        return True
+
+    def adapt(self, buffer: ReplayBuffer, ensemble_predictor) -> dict:
+        """Adapt every member; ``ensemble_predictor`` supplies the SAM / SAM 2
+        member predictors. Returns the per-member reports under ``members``
+        plus their totals."""
+        predictors = {m.name: m.predictor for m in ensemble_predictor.members}
+        reports = {}
+        for name, a in self.members:
+            p = predictors.get(name)
+            reports[name] = a.adapt(buffer,
+                                    sam_predictor=p if a.model_type == 'sam' else None,
+                                    sam2_predictor=p if a.model_type == 'sam2' else None)
+        losses = [r['mean_loss'] for r in reports.values() if np.isfinite(r['mean_loss'])]
+        return {
+            'steps': sum(r['steps'] for r in reports.values()),
+            'successful_steps': sum(r.get('successful_steps', 0) for r in reports.values()),
+            'mean_loss': float(np.mean(losses)) if losses else float('nan'),
+            'failures': [f'{n}: {f}' for n, r in reports.items() for f in r.get('failures', [])],
+            'members': reports,
+        }
+
+    def state_dict(self) -> dict:
+        return {'model_type': 'ensemble',
+                'members': {name: a.state_dict() for name, a in self.members}}
+
+    def load_state_dict(self, payload: dict) -> tuple[list, list]:
+        missing, unexpected = [], []
+        for name, a in self.members:
+            if name in payload['members']:
+                m, u = a.load_state_dict(payload['members'][name])
+                missing += m
+                unexpected += u
+            else:
+                missing.append(name)
+        return missing, unexpected
 
 
 # ---------------------------------------------------------------------------
