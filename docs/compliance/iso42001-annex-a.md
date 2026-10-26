@@ -14,7 +14,9 @@ adaptation (desktop app and benchmark) fine-tunes small LoRA adapters on the
 user's own corrected masks, and admins can train a project model (a SAM 2
 adapter) on a project's recorded clicks and saved masks in the web app; it is
 scored against the base model on held-out images and only used once an admin
-chooses it. The AI never labels without a human decision.
+chooses it. An automatic project model proposes labels with no clicks; a
+labeller accepts or rejects each proposal. The AI never labels without a
+human decision.
 
 ## A.2 Policies related to AI
 

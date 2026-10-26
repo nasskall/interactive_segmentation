@@ -54,6 +54,18 @@ audit-logged (`model.train*`, `model.delete`, `project.update`).
 Held-out sets are small for young projects; prefer a model only when its
 gain holds up as the project grows.
 
+Project models come in two kinds. **Interactive** ones take clicks and are
+scored against their base model as above. **Automatic** ones
+(`isegm/adaptation/promptless.py`) segment every mask / polygon class of the
+project with no clicks, from learned class prompts; they are trained on the
+images marked done (taken as completely labelled) and scored by per-class
+IoU on the held-out ones. An automatic model chosen for a project only
+*proposes* labels when a labeller asks (**Auto-label** in the workspace);
+each proposal becomes an annotation only when the labeller accepts it, and
+the annotation's provenance records the adapter and `"mode": "automatic"`.
+Its intended use is the same as above: never labels without a human
+decision.
+
 ## Performance
 
 Simulated-user benchmark (`tools/click_benchmark.py`): a robot clicks the

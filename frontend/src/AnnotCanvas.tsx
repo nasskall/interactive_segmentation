@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent,
          type PointerEvent } from 'react';
-import type { Annotation, LabelClass, SessionState } from './api';
+import type { Annotation, Geometry, LabelClass, SessionState } from './api';
 import { maskCanvas } from './lib';
 import { useZoomPan, ZoomControls } from './zoom';
 
@@ -14,6 +14,8 @@ interface Props {
   swipeImage?: HTMLImageElement | null;
   swipe?: number;           // 0..1 divider position
   annotations: Annotation[];
+  // Auto-label proposals awaiting a decision: drawn, not selectable.
+  proposals?: { class_id: number; geometry: Geometry }[];
   classes: Map<number, LabelClass>;
   hidden: Set<number>;      // annotation ids not drawn
   selectedId: number | null;
@@ -76,6 +78,11 @@ export default function AnnotCanvas(p: Props) {
     }
     return out;
   }, [p.annotations, p.classes]);
+
+  const proposalMasks = useMemo(() => (p.proposals ?? []).map((pr) =>
+    (pr.geometry.type === 'mask'
+      ? maskCanvas(pr.geometry.rle, p.classes.get(pr.class_id)?.color ?? '#888888') : null)),
+  [p.proposals, p.classes]);
 
   // Image pixels per screen pixel, for constant on-screen line widths.
   const unit = useCallback(() => {
@@ -143,6 +150,29 @@ export default function AnnotCanvas(p: Props) {
       }
     }
 
+    // Proposals: filled like labels, outlined with a dashed white line when polygons.
+    (p.proposals ?? []).forEach((pr, i) => {
+      const g = pr.geometry;
+      const color = p.classes.get(pr.class_id)?.color ?? '#888888';
+      ctx.globalAlpha = p.opacity;
+      if (g.type === 'mask') {
+        ctx.drawImage(proposalMasks[i]!, 0, 0, W, H);
+      } else if (g.type === 'polygon') {
+        ctx.beginPath();
+        g.points.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.setLineDash([6 * u, 4 * u]);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2 * u;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.globalAlpha = 1;
+    });
+
     // Live model prediction (session coordinates may be downscaled).
     if (p.session && p.sessionOverlay) {
       const s = W / p.session.width;
@@ -203,7 +233,7 @@ export default function AnnotCanvas(p: Props) {
         ctx.fill();
       });
     }
-  }, [p, masks, drag, draft, hover, unit, view, fit, fixedBoxAt]);
+  }, [p, masks, proposalMasks, drag, draft, hover, unit, view, fit, fixedBoxAt]);
 
   // ── coordinates ─────────────────────────────────────────────────────────
   const toImage = (e: { clientX: number; clientY: number }): [number, number] => {

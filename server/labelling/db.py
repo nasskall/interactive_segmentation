@@ -20,6 +20,8 @@ LABEL_TYPES = ('tag', 'box', 'polygon', 'mask')
 ROLES = ('admin', 'labeller')
 ITEM_STATUSES = ('todo', 'in_progress', 'done')
 MODEL_STATUSES = ('queued', 'running', 'done', 'failed', 'cancelled')
+# interactive: SAM 2 that takes clicks; automatic: SAM 2 that segments every class unprompted
+MODEL_KINDS = ('interactive', 'automatic')
 
 # Which label types each task type can use.
 ALLOWED_LABEL_TYPES = {
@@ -56,7 +58,9 @@ CREATE TABLE IF NOT EXISTS projects (
     created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at  TEXT NOT NULL,
     -- project model that assisted labelling uses (NULL: the shared model)
-    assist_model_id INTEGER REFERENCES project_models(id) ON DELETE SET NULL
+    assist_model_id INTEGER REFERENCES project_models(id) ON DELETE SET NULL,
+    -- automatic project model that proposes labels on request (NULL: none)
+    auto_model_id INTEGER REFERENCES project_models(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS classes (
@@ -104,6 +108,7 @@ CREATE INDEX IF NOT EXISTS annotations_item ON annotations(item_id);
 CREATE TABLE IF NOT EXISTS project_models (
     id              INTEGER PRIMARY KEY,
     project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL DEFAULT 'interactive' CHECK (kind IN {MODEL_KINDS}),
     status          TEXT NOT NULL CHECK (status IN {MODEL_STATUSES}),
     base_model_type TEXT NOT NULL,
     base_checkpoint TEXT NOT NULL,
@@ -113,7 +118,9 @@ CREATE TABLE IF NOT EXISTS project_models (
     train_objects   INTEGER NOT NULL,
     train_items     INTEGER NOT NULL,
     held_out_items  TEXT NOT NULL,   -- JSON list of item ids
-    metrics         TEXT,   -- JSON: held-out scores of 'base' and 'trained'
+    classes         TEXT,   -- automatic: JSON [{{"id", "name"}}], the order of its outputs
+    -- JSON held-out scores: interactive 'base' and 'trained'; automatic 'trained'
+    metrics         TEXT,
     adapter_file    TEXT,   -- relative to the models directory
     adapter_sha256  TEXT,
     error           TEXT,
@@ -147,9 +154,16 @@ class Database:
         if 'prompts' not in cols:
             conn.execute('ALTER TABLE annotations ADD COLUMN prompts TEXT')
         cols = {r['name'] for r in conn.execute('PRAGMA table_info(projects)')}
-        if 'assist_model_id' not in cols:
-            conn.execute('ALTER TABLE projects ADD COLUMN assist_model_id INTEGER '
-                         'REFERENCES project_models(id) ON DELETE SET NULL')
+        for col in ('assist_model_id', 'auto_model_id'):
+            if col not in cols:
+                conn.execute(f'ALTER TABLE projects ADD COLUMN {col} INTEGER '
+                             'REFERENCES project_models(id) ON DELETE SET NULL')
+        cols = {r['name'] for r in conn.execute('PRAGMA table_info(project_models)')}
+        if 'kind' not in cols:
+            conn.execute("ALTER TABLE project_models ADD COLUMN kind TEXT NOT NULL "
+                         f"DEFAULT 'interactive' CHECK (kind IN {MODEL_KINDS})")
+        if 'classes' not in cols:
+            conn.execute('ALTER TABLE project_models ADD COLUMN classes TEXT')
 
     def connect(self) -> sqlite3.Connection:
         # FastAPI may run a request's dependency and endpoint on different

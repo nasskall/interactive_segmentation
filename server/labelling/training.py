@@ -1,18 +1,27 @@
-"""Project models: SAM 2 fine-tuned on a project's recorded clicks.
+"""Project models: SAM 2 fine-tuned on a project's own labels.
 
 An admin starts a training run for a project; it runs in a background
 thread (one at a time: training is CPU/GPU heavy) and is recorded in the
 ``project_models`` table, which is the in-app model register: base
 checkpoint and its SHA-256, the adapter file and its SHA-256, which items
-were held out, and the held-out scores of the base model and the trained
-one. A finished model can then be chosen as the project's assist model.
+were held out, and the held-out scores. Two kinds:
 
-Training data are the project's assisted mask / polygon annotations that
-recorded their clicks (``annotations.prompts``) for a single object made
-with clicks only (no box, no automatic mask); the target is the mask as
-saved, so a labeller's corrections are what the model learns. Items, not
-objects, are split: ``HELD_OUT_FRACTION`` of the items (seeded shuffle) are
-held out for scoring and never trained on.
+``interactive``: SAM 2 that takes clicks, trained on the project's assisted
+mask / polygon annotations that recorded their clicks
+(``annotations.prompts``) for a single object made with clicks only (no box,
+no automatic mask); the target is the mask as saved, so a labeller's
+corrections are what the model learns. Scored against the base model with a
+simulated labeller; a finished one can be chosen as the project's assist
+model.
+
+``automatic``: SAM 2 that segments every mask / polygon class with no clicks
+(``isegm.adaptation.promptless``), trained on the project's images marked
+done (their labels are taken as complete: a class with no label on such an
+image is learned as absent). Scored by per-class IoU; a finished one can be
+chosen to propose labels, which a labeller accepts or rejects one by one.
+
+Items, not objects, are split: ``HELD_OUT_FRACTION`` of the items (seeded
+shuffle) are held out for scoring and never trained on.
 """
 
 from __future__ import annotations
@@ -33,7 +42,8 @@ from server.labelling.db import Database, now
 from server.labelling.export import rasterize
 from server.labelling.storage import ImageStore
 
-MIN_OBJECTS = 10            # trainable objects a project needs before training
+MIN_OBJECTS = 10            # trainable objects an interactive model needs
+MIN_IMAGES = 10             # done images an automatic model needs
 HELD_OUT_FRACTION = 0.2
 MAX_STEPS = 5000
 
@@ -51,8 +61,15 @@ def default_steps(train_objects: int) -> int:
     return int(min(2000, max(300, 50 * train_objects)))
 
 
+def default_auto_steps(train_images: int) -> int:
+    """About 30 steps (120 samples) per image, between 300 and 2000."""
+    return int(min(2000, max(300, 30 * train_images)))
+
+
 def model_out(r) -> dict:
-    return {'id': r['id'], 'project_id': r['project_id'], 'status': r['status'],
+    return {'id': r['id'], 'project_id': r['project_id'], 'kind': r['kind'],
+            'status': r['status'],
+            'classes': json.loads(r['classes']) if r['classes'] else None,
             'base_model_type': r['base_model_type'], 'base_checkpoint': r['base_checkpoint'],
             'base_sha256': r['base_sha256'], 'steps': r['steps'],
             'progress': json.loads(r['progress']) if r['progress'] else None,
@@ -120,6 +137,40 @@ def data_summary(conn, project_id: int) -> dict:
             'max_steps': MAX_STEPS, 'problems': problems}
 
 
+def automatic_data(conn, project_id: int) -> tuple[list[dict], list[dict]]:
+    """(classes an automatic model predicts, in output order; the project's
+    done single images with their mask / polygon labels)."""
+    classes = [{'id': r['id'], 'name': r['name']} for r in conn.execute(
+        "SELECT id, name FROM classes WHERE project_id = ? AND label_type IN ('mask', 'polygon') "
+        'ORDER BY position, id', (project_id,))]
+    index = {c['id']: i for i, c in enumerate(classes)}
+    items = []
+    for it in conn.execute("SELECT * FROM items WHERE project_id = ? AND status = 'done' "
+                           "AND kind = 'single' ORDER BY id", (project_id,)):
+        labels = [(index[a['class_id']], json.loads(a['geometry'])) for a in conn.execute(
+            'SELECT class_id, geometry FROM annotations WHERE item_id = ? ORDER BY id', (it['id'],))
+            if a['class_id'] in index]
+        items.append({'item_id': it['id'], 'file': json.loads(it['files'])['image'],
+                      'width': it['width'], 'height': it['height'], 'labels': labels})
+    return classes, items
+
+
+def automatic_summary(conn, project_id: int) -> dict:
+    classes, items = automatic_data(conn, project_id)
+    train, held, held_items = split_items(items)
+    problems = []
+    if not classes:
+        problems.append('Needs a mask or polygon class.')
+    if len(items) < MIN_IMAGES:
+        problems.append(f'Needs at least {MIN_IMAGES} images marked done (has {len(items)}).')
+    if items and not any(it['labels'] for it in items):
+        problems.append('The done images have no mask or polygon labels.')
+    return {'classes': classes, 'done_images': len(items),
+            'labels': sum(len(it['labels']) for it in items), 'train_images': len(train),
+            'held_out_images': len(held_items), 'default_steps': default_auto_steps(len(train)),
+            'min_images': MIN_IMAGES, 'max_steps': MAX_STEPS, 'problems': problems}
+
+
 # ── runner ────────────────────────────────────────────────────────────────
 
 FitFn = Callable[[dict, Callable[..., None], Callable[[], bool]], dict]
@@ -128,13 +179,13 @@ FitFn = Callable[[dict, Callable[..., None], Callable[[], bool]], dict]
 class TrainingRunner:
     """Runs one training job at a time in a background thread. ``fit(job,
     report, should_stop)`` does the work and returns ``{'metrics': ...,
-    'adapter_file': ...}``; the default is ``fit_sam2`` (tests pass a stub)."""
+    'adapter_file': ...}``; by default ``FITS[kind]`` (tests set ``fit``)."""
 
     def __init__(self, db: Database, images: ImageStore, models_dir: Path,
                  weights_dir: Path, device: str, fit: Optional[FitFn] = None):
         self.db, self.images, self.device = db, images, device
         self.models_dir, self.weights_dir = Path(models_dir), Path(weights_dir)
-        self.fit = fit or fit_sam2
+        self.fit = fit
         self._thread: Optional[threading.Thread] = None
         self._running_id: Optional[int] = None
         self._cancel = threading.Event()
@@ -149,32 +200,40 @@ class TrainingRunner:
     def running_id(self) -> Optional[int]:
         return self._running_id if self._thread and self._thread.is_alive() else None
 
-    def start(self, project_id: int, user, base_model_type: str, base_checkpoint: str,
-              base_sha256: Optional[str], steps: int, objects: list[dict]) -> int:
+    def start(self, project_id: int, user, kind: str, base_model_type: str,
+              base_checkpoint: str, base_sha256: Optional[str], steps: int,
+              records: list[dict], classes: Optional[list[dict]] = None) -> int:
+        """``records``: objects (interactive) or images (automatic), each
+        with an ``item_id``; ``classes``: an automatic model's outputs."""
         # Requests run in a threadpool: check and start under one lock.
         with self._start_lock:
             if self.running_id is not None:
                 raise RuntimeError(f'Model {self._running_id} is still training; '
                                    'wait for it or cancel it')
-            return self._start(project_id, user, base_model_type, base_checkpoint,
-                               base_sha256, steps, objects)
+            return self._start(project_id, user, kind, base_model_type, base_checkpoint,
+                               base_sha256, steps, records, classes)
 
-    def _start(self, project_id, user, base_model_type, base_checkpoint, base_sha256,
-               steps, objects) -> int:
-        train, held, held_items = split_items(objects)
+    def _start(self, project_id, user, kind, base_model_type, base_checkpoint, base_sha256,
+               steps, records, classes) -> int:
+        train, held, held_items = split_items(records)
+        objects = (len(train) if kind == 'interactive'
+                   else sum(len(r['labels']) for r in train))
         with closing(self.db.connect()) as conn, conn:
             cur = conn.execute(
-                'INSERT INTO project_models (project_id, status, base_model_type, base_checkpoint, '
-                'base_sha256, steps, train_objects, train_items, held_out_items, created_by, '
-                "created_at) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (project_id, base_model_type, base_checkpoint, base_sha256, steps, len(train),
-                 len({o['item_id'] for o in train}), json.dumps(held_items), user['id'], now()))
+                'INSERT INTO project_models (project_id, kind, status, base_model_type, '
+                'base_checkpoint, base_sha256, steps, train_objects, train_items, held_out_items, '
+                "classes, created_by, created_at) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, "
+                '?, ?)',
+                (project_id, kind, base_model_type, base_checkpoint, base_sha256, steps, objects,
+                 len({r['item_id'] for r in train}), json.dumps(held_items),
+                 json.dumps(classes) if classes is not None else None, user['id'], now()))
             model_id = cur.lastrowid
             audit.record(conn, 'model.train', user=user, target=f'project_model:{model_id}',
-                         detail={'project_id': project_id, 'base_checkpoint': base_checkpoint,
-                                 'steps': steps, 'train_objects': len(train),
-                                 'held_out_items': held_items})
-        job = {'id': model_id, 'project_id': project_id, 'base_model_type': base_model_type,
+                         detail={'project_id': project_id, 'kind': kind,
+                                 'base_checkpoint': base_checkpoint, 'steps': steps,
+                                 'train_objects': objects, 'held_out_items': held_items})
+        job = {'id': model_id, 'project_id': project_id, 'kind': kind, 'classes': classes,
+               'base_model_type': base_model_type,
                'base_checkpoint': base_checkpoint, 'base_sha256': base_sha256, 'steps': steps,
                'train': train, 'held': held, 'images': self.images, 'device': self.device,
                'weights_dir': self.weights_dir,
@@ -215,8 +274,9 @@ class TrainingRunner:
             self._set(model_id, progress=json.dumps(
                 {'phase': phase, 'done': done, 'total': total, 'loss': loss}))
 
+        fit = self.fit or FITS[job['kind']]
         try:
-            result = self.fit(job, report, self._cancel.is_set)
+            result = fit(job, report, self._cancel.is_set)
         except Exception as exc:
             cancelled = self._cancel.is_set()
             self._set(model_id, status='cancelled' if cancelled else 'failed',
@@ -276,3 +336,50 @@ def fit_sam2(job: dict, report, should_stop) -> dict:
         'base_sha256': job['base_sha256'], 'steps': job['steps'], 'metrics': metrics}
     torch.save(payload, out / 'adapter.pt')
     return {'metrics': metrics, 'adapter_file': 'adapter.pt'}
+
+
+def _auto_examples(items: list[dict], n_classes: int, images: ImageStore):
+    from isegm.adaptation.promptless import Example
+
+    def loader(it):
+        def load():
+            masks = np.zeros((n_classes, it['height'], it['width']), bool)
+            for c, geom in it['labels']:
+                masks[c] |= rasterize(geom, it['width'], it['height']).astype(bool)
+            return images.load_rgb(it['item_id'], it['file']), masks
+        return load
+    return [Example(f"i{it['item_id']}", loader(it)) for it in items]
+
+
+def fit_promptless(job: dict, report, should_stop) -> dict:
+    """Train a click-free SAM 2 on the training images, score it per class on
+    the held-out ones, save the adapter with its class prompts."""
+    import torch
+
+    from isegm.adaptation import promptless as pl
+    from isegm.inference import utils
+
+    net = utils.load_model_by_type(str(job['weights_dir'] / job['base_checkpoint']),
+                                   job['base_model_type'], job['device'])
+    n = len(job['classes'])
+    train = _auto_examples(job['train'], n, job['images'])
+    held = _auto_examples(job['held'], n, job['images'])
+    out = Path(job['out_dir'])
+    out.mkdir(parents=True, exist_ok=True)
+    try:
+        prompts, payload = pl.train(net, n, train, job['steps'], job['device'], out / 'features',
+                                    report=report, should_stop=should_stop)
+    finally:
+        shutil.rmtree(out / 'features', ignore_errors=True)
+    report('scoring', 0, len(held))
+    metrics = {'trained': pl.evaluate(net, prompts, held, job['device'], should_stop=should_stop)}
+    payload['project_training'] = {
+        'project_model_id': job['id'], 'project_id': job['project_id'], 'kind': 'automatic',
+        'classes': job['classes'], 'base_model_type': job['base_model_type'],
+        'base_checkpoint': job['base_checkpoint'], 'base_sha256': job['base_sha256'],
+        'steps': job['steps'], 'metrics': metrics}
+    torch.save(payload, out / 'adapter.pt')
+    return {'metrics': metrics, 'adapter_file': 'adapter.pt'}
+
+
+FITS: dict[str, FitFn] = {'interactive': fit_sam2, 'automatic': fit_promptless}

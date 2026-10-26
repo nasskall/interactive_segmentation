@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AnnotCanvas, { type Tool } from './AnnotCanvas';
 import { api, TASK_LABELS, type Annotation, type Geometry, type Item, type ItemStatus,
          type LabelClass, type LabelType, type LoadModelBody, type ModelInfo, type Project,
-         type SessionState, type User } from './api';
+         type Proposal, type ProposalSet, type SessionState, type User } from './api';
 import ModelChooser, { describeModel, describeWeights } from './ModelChooser';
 import { go, href, useAuthedImage, useImage } from './lib';
 
@@ -90,6 +90,8 @@ export default function Workspace({ itemId, me }: Props) {
   const [role, setRole] = useState('image');      // which image of the item is shown
   const [swipe, setSwipe] = useState<number | null>(null);
   const [sessions, setSessions] = useState<Record<string, SessionState>>({});
+  // Auto-label proposals not yet accepted or rejected.
+  const [proposals, setProposals] = useState<ProposalSet | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
@@ -106,6 +108,7 @@ export default function Workspace({ itemId, me }: Props) {
     setSelectedId(null);
     setHidden(new Set());
     setSwipe(null);
+    setProposals(null);
     setError(null);
     (async () => {
       const it = await api.getItem(itemId);
@@ -252,6 +255,31 @@ export default function Workspace({ itemId, me }: Props) {
   const sessionAction = (label: string, fn: (sid: string) => Promise<SessionState>) => {
     if (!session) return;
     run(label, async () => putSession(role, await fn(session.session_id)));
+  };
+
+  // ── auto-label proposals ────────────────────────────────────────────────
+  const dropProposal = (index: number) =>
+    setProposals((ps) => ps && { ...ps, proposals: ps.proposals.filter((x) => x.index !== index) });
+
+  const autoLabel = () => {
+    if (!item) return;
+    run('Auto-label', async () => {
+      const ps = await api.autoLabel(item.id);
+      setProposals(ps);
+      if (!ps.proposals.length) setStatus('Auto-label found nothing on this image');
+    });
+  };
+
+  const acceptProposals = (list: Proposal[]) => {
+    if (!item || !proposals || !list.length) return;
+    const set = proposals.set;
+    run(list.length === 1 ? 'Accept' : `Accept ${list.length}`, async () => {
+      for (const pr of list) {
+        addAnnotation(await api.createAnnotation(item.id, {
+          class_id: pr.class_id, from_proposal: { set, index: pr.index } }));
+        dropProposal(pr.index);
+      }
+    });
   };
 
   const deleteAnnotation = (id: number) =>
@@ -529,6 +557,48 @@ export default function Workspace({ itemId, me }: Props) {
           </section>
         )}
 
+        {project.auto_model_id !== null && item.kind === 'single' && !isClassification && (
+          <section>
+            <h2>Auto-label</h2>
+            {!proposals ? (
+              <>
+                <button disabled={busy} onClick={autoLabel}>Propose labels</button>
+                <p className="meta">The project's automatic model proposes labels for this image;
+                  nothing is saved until you accept it.</p>
+              </>
+            ) : (
+              <>
+                <ul className="ann-list">
+                  {proposals.proposals.map((pr) => {
+                    const c = classMap.get(pr.class_id);
+                    return (
+                      <li key={pr.index} className="static">
+                        <span className="swatch" style={{ background: c?.color }} />
+                        <span className="grow">{c?.name ?? 'deleted class'}
+                          <span className="muted small"> · {(pr.area * 100).toFixed(1)}% of image
+                            · conf. {pr.score.toFixed(2)}</span></span>
+                        <button className="icon" title="Accept" disabled={busy}
+                                onClick={() => acceptProposals([pr])}>✓</button>
+                        <button className="icon" title="Reject" disabled={busy}
+                                onClick={() => dropProposal(pr.index)}>✕</button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {proposals.proposals.length === 0 && <p className="meta">No proposals left.</p>}
+                <div className="row">
+                  <button className="primary" disabled={busy || !proposals.proposals.length}
+                          onClick={() => acceptProposals(proposals.proposals)}>Accept all</button>
+                  <button disabled={busy} onClick={() => setProposals(null)}>
+                    {proposals.proposals.length ? 'Reject all' : 'Done'}</button>
+                </div>
+                <p className="meta">Proposals are drawn on the image; accepted ones become labels
+                  you can correct like any other.</p>
+              </>
+            )}
+          </section>
+        )}
+
         <section>
           <h2>Annotations ({annotations.length})</h2>
           <ul className="ann-list">
@@ -597,6 +667,7 @@ export default function Workspace({ itemId, me }: Props) {
             swipeImage={swipe !== null ? before : null}
             swipe={swipe ?? undefined}
             annotations={annotations}
+            proposals={proposals?.proposals}
             classes={classMap}
             hidden={hidden}
             selectedId={selectedId}

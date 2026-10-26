@@ -3,8 +3,9 @@
 
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react';
 import { api, TASK_FORMATS, TASK_LABELS, type AuditEntry, type ExportFormat, type Item,
-         type LabelClass, type LabelType, type ModelStatus, type Progress, type Project,
-         type ProjectModel, type ProjectModels, type TaskType, type User } from './api';
+         type LabelClass, type LabelType, type ModelKind, type ModelStatus, type Progress,
+         type Project, type ProjectModel, type ProjectModels, type TaskType,
+         type User } from './api';
 import { go, href, saveBlob } from './lib';
 
 const TASK_HELP: Record<TaskType, string> = {
@@ -511,6 +512,11 @@ const STATUS_LABELS: Record<ModelStatus, string> = {
   queued: 'queued', running: 'training', done: 'ready', failed: 'failed', cancelled: 'cancelled',
 };
 
+const KIND_LABELS: Record<ModelKind, string> = {
+  interactive: 'Interactive (learns from clicks)',
+  automatic: 'Automatic (no clicks)',
+};
+
 /** "5.62 → 3.17" coloured by whether the trained model is better. */
 function Change({ base, trained, lowerIsBetter, digits }: {
   base: number; trained: number; lowerIsBetter: boolean; digits: number;
@@ -525,6 +531,18 @@ function Change({ base, trained, lowerIsBetter, digits }: {
 
 function ModelScores({ m }: { m: ProjectModel }) {
   if (!m.metrics) return <span className="muted">—</span>;
+  if (!('base' in m.metrics)) {
+    const t = m.metrics.trained;
+    return (
+      <div className="small">
+        <div title="Intersection over union with the saved labels, all held-out images together">
+          Mean IoU: <strong>{t.miou.toFixed(3)}</strong></div>
+        <div className="meta">{(m.classes ?? []).map((c, i) => `${c.name} ${t.iou[i].toFixed(2)}`)
+          .join(' · ')}</div>
+        <div className="meta">{t.images} held-out images</div>
+      </div>
+    );
+  }
   const { base, trained } = m.metrics;
   return (
     <div className="small">
@@ -554,10 +572,44 @@ function ModelStatusCell({ m }: { m: ProjectModel }) {
   );
 }
 
+function TrainingData({ info, kind }: { info: ProjectModels; kind: ModelKind }) {
+  if (kind === 'automatic') {
+    const d = info.auto_data;
+    return (
+      <>
+        <p className="meta">Trains SAM 2 to find every mask and polygon class
+          ({d.classes.map((c) => c.name).join(', ') || 'none yet'}) with no clicks, from the
+          images marked done: their labels are taken as complete, so mark an image done only when
+          every object on it is labelled. A fifth of them are held out to score it.</p>
+        <p>{d.done_images} done images with {d.labels} labels
+          {d.done_images > 0 && <> ({d.train_images} to train, {d.held_out_images} held out)</>}.</p>
+        <p className="meta">Once chosen, <strong>Auto-label</strong> in the workspace proposes labels
+          for an image; each becomes a label only when the labeller accepts it.</p>
+      </>
+    );
+  }
+  const d = info.data;
+  return (
+    <>
+      <p className="meta">Fine-tunes SAM 2 on the clicks your labellers made and the masks they
+        saved, corrections included. A fifth of the images are held out: the base model and the
+        trained one are both scored on them with a simulated labeller, and they are never
+        trained on.</p>
+      <p>{d.trainable_objects} labelled objects on {d.items} images can be used
+        {d.trainable_objects > 0 && <> ({d.train_objects} to train, {d.held_out_objects} held out
+          on {d.held_out_items} images)</>}.</p>
+      <p className="meta">Only objects made with clicks in assisted labelling and saved one per
+        label count; boxes, automatic masks, manual drawings and older labels saved before clicks
+        were recorded do not.</p>
+    </>
+  );
+}
+
 export function ModelsPanel({ project, onChanged }: {
   project: Project; onChanged: (p: Project) => void;
 }) {
   const [info, setInfo] = useState<ProjectModels | null>(null);
+  const [kind, setKind] = useState<ModelKind>('interactive');
   const [checkpoint, setCheckpoint] = useState('');
   const [steps, setSteps] = useState('');
   const { busy, error, setError, run } = useAsync();
@@ -573,36 +625,37 @@ export function ModelsPanel({ project, onChanged }: {
 
   if (!info) return <div className="card">{error ? <p className="error-text">{error}</p>
                                                 : <span className="muted">Loading…</span>}</div>;
-  const d = info.data;
-  const inUse = info.models.find((m) => m.id === info.assist_model_id);
+  const d = kind === 'automatic' ? info.auto_data : info.data;
+  const assist = info.models.find((m) => m.id === info.assist_model_id);
+  const auto = info.models.find((m) => m.id === info.auto_model_id);
   const otherTraining = info.training_id !== null && !info.models.some((m) => m.id === info.training_id);
   const stepsN = steps ? Number(steps) : undefined;
   const stepsOk = stepsN === undefined || (Number.isInteger(stepsN) && stepsN >= 10 && stepsN <= d.max_steps);
 
   const train = () => run(async () => {
-    await api.trainProjectModel(project.id, { checkpoint: checkpoint || undefined, steps: stepsN });
+    await api.trainProjectModel(project.id, { kind, checkpoint: checkpoint || undefined,
+                                              steps: stepsN });
     await reload();
   });
-  const choose = (id: number | null) => run(async () => {
-    onChanged(await api.updateProject(project.id, { assist_model_id: id }));
-    await reload();
-  });
+  const choose = (body: { assist_model_id?: number | null; auto_model_id?: number | null }) =>
+    run(async () => {
+      onChanged(await api.updateProject(project.id, body));
+      await reload();
+    });
   const act = (fn: () => Promise<unknown>) => run(async () => { await fn(); await reload(); });
+  const inUse = (m: ProjectModel) => m.id === info.assist_model_id || m.id === info.auto_model_id;
 
   return (
     <div className="stack">
       <div className="card form">
         <h2 className="form-title">Train a model for this project</h2>
-        <p className="meta">Fine-tunes SAM 2 on the clicks your labellers made and the masks they
-          saved, corrections included. A fifth of the images are held out: the base model and the
-          trained one are both scored on them with a simulated labeller, and they are never
-          trained on.</p>
-        <p>{d.trainable_objects} labelled objects on {d.items} images can be used
-          {d.trainable_objects > 0 && <> ({d.train_objects} to train, {d.held_out_objects} held out
-            on {d.held_out_items} images)</>}.</p>
-        <p className="meta">Only objects made with clicks in assisted labelling and saved one per
-          label count; boxes, automatic masks, manual drawings and older labels saved before clicks
-          were recorded do not.</p>
+        <div className="segmented">
+          {(['interactive', 'automatic'] as const).map((k) => (
+            <button key={k} className={kind === k ? 'active' : ''}
+                    onClick={() => { setKind(k); setSteps(''); }}>{KIND_LABELS[k]}</button>
+          ))}
+        </div>
+        <TrainingData info={info} kind={kind} />
         {d.problems.map((p) => <p key={p} className="error-text">{p}</p>)}
         {info.base_models.length === 0 && (
           <p className="error-text">No SAM 2 checkpoint in the server's weights folder.</p>)}
@@ -636,33 +689,41 @@ export function ModelsPanel({ project, onChanged }: {
 
       <div className="card">
         <p>Assisted labelling uses{' '}
-          {inUse ? <strong>project model #{inUse.id}</strong> : 'the shared model'}.
-          {inUse && <> <button disabled={busy} onClick={() => choose(null)}>Use the shared model</button></>}
+          {assist ? <strong>project model #{assist.id}</strong> : 'the shared model'}.
+          {assist && <> <button disabled={busy} onClick={() => choose({ assist_model_id: null })}>
+            Use the shared model</button></>}
+        </p>
+        <p>Auto-labelling: {auto ? <strong>project model #{auto.id}</strong> : 'off'}.
+          {auto && <> <button disabled={busy} onClick={() => choose({ auto_model_id: null })}>
+            Turn off</button></>}
         </p>
         {info.models.length === 0
           ? <p className="muted">No models trained yet.</p>
           : (
             <table className="items models">
-              <thead><tr><th>Model</th><th>Held-out score (base → trained)</th><th>Trained on</th>
+              <thead><tr><th>Model</th><th>Held-out score</th><th>Trained on</th>
                 <th>Status</th><th /></tr></thead>
               <tbody>
                 {info.models.map((m) => (
                   <tr key={m.id} className="static">
-                    <td>#{m.id}<div className="meta">{m.base_model_type}</div>
+                    <td>#{m.id} · {m.kind}<div className="meta">{m.base_model_type}</div>
                       <div className="meta">{m.created_at.slice(0, 16).replace('T', ' ')}</div></td>
                     <td><ModelScores m={m} /></td>
-                    <td className="small">{m.train_objects} objects, {m.train_items} images
-                      <div className="meta">{m.steps} steps</div></td>
+                    <td className="small">{m.train_objects} {m.kind === 'automatic' ? 'labels' : 'objects'},
+                      {' '}{m.train_items} images<div className="meta">{m.steps} steps</div></td>
                     <td><ModelStatusCell m={m} /></td>
                     <td><div className="actions">
                       {(m.status === 'queued' || m.status === 'running') && (
                         <button disabled={busy} onClick={() => act(() => api.cancelProjectModel(m.id))}>
                           Cancel</button>)}
-                      {m.status === 'done' && m.id !== info.assist_model_id && (
-                        <button className="primary" disabled={busy} onClick={() => choose(m.id)}>
-                          Use for labelling</button>)}
-                      {m.id === info.assist_model_id && <span className="badge status-done">in use</span>}
-                      {m.status !== 'queued' && m.status !== 'running' && m.id !== info.assist_model_id && (
+                      {m.status === 'done' && !inUse(m) && (
+                        <button className="primary" disabled={busy}
+                                onClick={() => choose(m.kind === 'automatic' ? { auto_model_id: m.id }
+                                                                             : { assist_model_id: m.id })}>
+                          {m.kind === 'automatic' ? 'Use for auto-labelling' : 'Use for labelling'}
+                        </button>)}
+                      {inUse(m) && <span className="badge status-done">in use</span>}
+                      {m.status !== 'queued' && m.status !== 'running' && !inUse(m) && (
                         <ConfirmButton label="Delete" confirm="Delete this model?" disabled={busy}
                                        onConfirm={() => act(() => api.deleteProjectModel(m.id))} />)}
                     </div></td>

@@ -20,7 +20,10 @@ Project models (``training.py``): admins train SAM 2 on a project's recorded
 clicks (``POST /projects/{id}/models``), compare it with the base model on
 held-out images, and choose it as the project's assist model
 (``PATCH /projects/{id}`` with ``assist_model_id``). Assist sessions on that
-project then run on it, whatever the shared model is.
+project then run on it, whatever the shared model is. An automatic project
+model (``kind`` "automatic", no clicks) chosen as ``auto_model_id`` proposes
+labels for an image (``POST /items/{id}/auto-label``); each proposal becomes
+an annotation only when a labeller accepts it (``from_proposal``).
 
 Security events and every change to accounts, projects, items and
 annotations go to the hash-chained audit log (``audit.py``), which admins
@@ -36,6 +39,8 @@ import secrets
 import shutil
 import sqlite3
 import tempfile
+import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator, Literal, Optional
@@ -55,6 +60,8 @@ from server.labelling.storage import ImageError, ImageStore, decode, extension
 from server.sessions import ModelManager, guess_model_type
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+AUTO_MIN_AREA = 0.0005      # auto-label regions smaller than this share of the image are dropped
+MAX_PROPOSAL_SETS = 64      # auto-label results kept for accepting
 USERNAME_PATTERN = r'^[A-Za-z0-9_.-]{3,32}$'
 COLOR_PATTERN = r'^#[0-9a-fA-F]{6}$'
 
@@ -102,12 +109,19 @@ class ProjectPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     multi_label: Optional[bool] = None
     protocol: Optional[str] = None
-    assist_model_id: Optional[int] = None   # a finished project model, or null for the shared one
+    assist_model_id: Optional[int] = None   # a finished interactive model, or null: the shared one
+    auto_model_id: Optional[int] = None     # a finished automatic model, or null: none
 
 
 class TrainIn(BaseModel):
+    kind: Literal[('interactive', 'automatic')] = 'interactive'
     checkpoint: Optional[str] = None        # SAM 2 base checkpoint; default: the first one
     steps: Optional[int] = Field(default=None, ge=10, le=training.MAX_STEPS)
+
+
+class ProposalRef(BaseModel):
+    set: str
+    index: int = Field(ge=0)
 
 
 class ClassIn(BaseModel):
@@ -137,6 +151,7 @@ class AnnotationIn(BaseModel):
     class_id: int
     geometry: Optional[dict] = None
     from_session: Optional[str] = None
+    from_proposal: Optional[ProposalRef] = None
 
 
 class AnnotationPatch(BaseModel):
@@ -155,7 +170,8 @@ def project_out(r: sqlite3.Row) -> dict:
     return {'id': r['id'], 'name': r['name'], 'task_type': r['task_type'],
             'multi_label': bool(r['multi_label']), 'protocol': r['protocol'],
             'allowed_label_types': list(ALLOWED_LABEL_TYPES[r['task_type']]),
-            'assist_model_id': r['assist_model_id'], 'created_at': r['created_at']}
+            'assist_model_id': r['assist_model_id'], 'auto_model_id': r['auto_model_id'],
+            'created_at': r['created_at']}
 
 
 def class_out(r: sqlite3.Row) -> dict:
@@ -193,6 +209,8 @@ class LabellingContext:
     # assist session id -> (item id, user id, image role)
     assist_sessions: dict[str, tuple[int, int, str]] = field(default_factory=dict)
     training: Optional[training.TrainingRunner] = None
+    # auto-label proposal set id -> {item_id, user_id, model, proposals}, oldest first
+    proposals: OrderedDict = field(default_factory=OrderedDict)
     throttle: auth.LoginThrottle = field(default_factory=auth.LoginThrottle)
     # FastAPI dependencies, shared with the segmentation endpoints in app.py.
     get_db: Optional[Callable] = None
@@ -431,15 +449,17 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
     def update_project(project_id: int, body: ProjectPatch, user=Depends(admin_user),
                        conn=Depends(get_db, scope='function')):
         get_project(conn, project_id, user)
-        if 'assist_model_id' in body.model_fields_set and body.assist_model_id is not None:
-            m = conn.execute('SELECT status FROM project_models WHERE id = ? AND project_id = ?',
-                             (body.assist_model_id, project_id)).fetchone()
-            if m is None or m['status'] != 'done':
-                raise HTTPException(400, f'Model {body.assist_model_id} is not a finished '
-                                         'model of this project')
-        if 'assist_model_id' in body.model_fields_set:
-            conn.execute('UPDATE projects SET assist_model_id = ? WHERE id = ?',
-                         (body.assist_model_id, project_id))
+        for col, kind in (('assist_model_id', 'interactive'), ('auto_model_id', 'automatic')):
+            if col not in body.model_fields_set:
+                continue
+            model_id = getattr(body, col)
+            if model_id is not None:
+                m = conn.execute('SELECT status, kind FROM project_models '
+                                 'WHERE id = ? AND project_id = ?', (model_id, project_id)).fetchone()
+                if m is None or m['status'] != 'done' or m['kind'] != kind:
+                    raise HTTPException(400, f'Model {model_id} is not a finished {kind} '
+                                             'model of this project')
+            conn.execute(f'UPDATE projects SET {col} = ? WHERE id = ?', (model_id, project_id))
         try:
             for col in ('name', 'protocol', 'multi_label'):
                 value = getattr(body, col)
@@ -719,11 +739,15 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                                           models_dir / m['adapter_file'], m['adapter_sha256'])
         except (ValueError, OSError) as exc:
             raise HTTPException(409, f'Project model {model_id} cannot be loaded: {exc}')
-        provenance = {'model_type': m['base_model_type'], 'checkpoint': m['base_checkpoint'],
-                      'sha256': m['base_sha256'],
-                      'adapter': {'project_model_id': m['id'], 'file': m['adapter_file'],
-                                  'sha256': m['adapter_sha256']}}
-        return net, m['base_model_type'], provenance, f"Project model #{m['id']} ({m['base_model_type']})"
+        return (net, m['base_model_type'], model_provenance(m),
+                f"Project model #{m['id']} ({m['base_model_type']})")
+
+    def model_provenance(m) -> dict:
+        """What a project model's annotations record: base checkpoint and adapter."""
+        return {'model_type': m['base_model_type'], 'checkpoint': m['base_checkpoint'],
+                'sha256': m['base_sha256'],
+                'adapter': {'project_model_id': m['id'], 'kind': m['kind'],
+                            'file': m['adapter_file'], 'sha256': m['adapter_sha256']}}
 
     def assisted_from_session(sid: str, item, user) -> tuple[np.ndarray, dict, dict]:
         """(mask at the item's resolution, prompts, model provenance) of an
@@ -765,11 +789,15 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         it = get_item(conn, item_id, user)
         p = conn.execute('SELECT * FROM projects WHERE id = ?', (it['project_id'],)).fetchone()
         cls = get_class(conn, body.class_id, p['id'])
-        if (body.geometry is None) == (body.from_session is None) and cls['label_type'] != 'tag':
-            raise HTTPException(400, 'Give either geometry or from_session')
+        given = sum(x is not None for x in (body.geometry, body.from_session, body.from_proposal))
+        if given != 1 and cls['label_type'] != 'tag':
+            raise HTTPException(400, 'Give one of geometry, from_session or from_proposal')
         prompts = None
         try:
-            if body.from_session is not None:
+            if body.from_proposal is not None:
+                geom, provenance = take_proposal(body.from_proposal, it, user, cls)
+                source, model = 'assisted', json.dumps(provenance)
+            elif body.from_session is not None:
                 mask, prompts, provenance = assisted_from_session(body.from_session, it, user)
                 geom = geometry.mask_to_geometry(mask, cls['label_type'])
                 source, model, prompts = 'assisted', json.dumps(provenance), json.dumps(prompts)
@@ -899,8 +927,9 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         rows = conn.execute('SELECT * FROM project_models WHERE project_id = ? ORDER BY id DESC',
                             (project_id,))
         return {'models': [training.model_out(r) for r in rows],
-                'assist_model_id': p['assist_model_id'],
+                'assist_model_id': p['assist_model_id'], 'auto_model_id': p['auto_model_id'],
                 'data': training.data_summary(conn, project_id),
+                'auto_data': training.automatic_summary(conn, project_id),
                 'base_models': base_models(), 'training_id': ctx.training.running_id}
 
     @router.post('/projects/{project_id}/models', status_code=202)
@@ -915,15 +944,19 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         if body.checkpoint is not None and base is None:
             raise HTTPException(400, f'{body.checkpoint!r} is not a SAM 2 checkpoint')
         base = base or bases[0]
-        summary = training.data_summary(conn, project_id)
+        if body.kind == 'automatic':
+            summary = training.automatic_summary(conn, project_id)
+            classes, records = training.automatic_data(conn, project_id)
+        else:
+            summary = training.data_summary(conn, project_id)
+            classes, records = None, training.trainable_objects(conn, project_id)
         if summary['problems']:
             raise HTTPException(400, ' '.join(summary['problems']))
         try:
             model_id = ctx.training.start(
-                project_id, user, base['model_type'], base['checkpoint'],
+                project_id, user, body.kind, base['model_type'], base['checkpoint'],
                 ctx.manager.checkpoint_sha256(base['checkpoint']),
-                body.steps or summary['default_steps'],
-                training.trainable_objects(conn, project_id))
+                body.steps or summary['default_steps'], records, classes)
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
         return training.model_out(get_project_model(conn, model_id))
@@ -943,8 +976,9 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         m = get_project_model(conn, model_id)
         if m['status'] in ('queued', 'running'):
             raise HTTPException(409, 'Cancel the training first')
-        if conn.execute('SELECT 1 FROM projects WHERE assist_model_id = ?', (model_id,)).fetchone():
-            raise HTTPException(409, 'The project assists with this model; choose another first')
+        if conn.execute('SELECT 1 FROM projects WHERE assist_model_id = ? OR auto_model_id = ?',
+                        (model_id, model_id)).fetchone():
+            raise HTTPException(409, 'The project uses this model; choose another first')
         conn.execute('DELETE FROM project_models WHERE id = ?', (model_id,))
         audit.record(conn, 'model.delete', user=user, target=f'project_model:{model_id}',
                      detail={'project_id': m['project_id'], 'adapter_sha256': m['adapter_sha256']})
@@ -952,6 +986,84 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         shutil.rmtree(models_dir / f"project_{m['project_id']}" / f'model_{model_id}',
                       ignore_errors=True)
         return Response(status_code=204)
+
+    # ── automatic labelling ───────────────────────────────────────────────
+
+    @router.post('/items/{item_id}/auto-label')
+    def auto_label(item_id: int, user=Depends(current_user), conn=Depends(get_db, scope='function')):
+        """Proposals of the project's automatic model for this image: one
+        per class (semantic segmentation) or per connected region (instance
+        segmentation), in each class's label type. Nothing is saved; accept
+        a proposal by creating an annotation ``from_proposal``."""
+        it = get_item(conn, item_id, user)
+        p = conn.execute('SELECT * FROM projects WHERE id = ?', (it['project_id'],)).fetchone()
+        if p['auto_model_id'] is None:
+            raise HTTPException(400, 'This project has no automatic model; an admin can '
+                                     'train and choose one on the Models tab')
+        if it['kind'] != 'single':
+            raise HTTPException(400, 'Automatic labelling works on single images')
+        m = get_project_model(conn, p['auto_model_id'])
+        try:
+            net, prompts = ctx.manager.adapter_net(
+                m['base_model_type'], m['base_checkpoint'], models_dir / m['adapter_file'],
+                m['adapter_sha256'], kind='automatic')
+        except (ValueError, OSError) as exc:
+            raise HTTPException(409, f"Project model {m['id']} cannot be loaded: {exc}")
+        from isegm.adaptation import promptless
+        image = ctx.images.load_rgb(item_id, json.loads(it['files'])['image'])
+        with ctx.manager.lock:
+            probs = promptless.predict(net, prompts, image, ctx.manager.device)
+        classes = {c['id']: c for c in conn.execute(
+            'SELECT * FROM classes WHERE project_id = ?', (p['id'],))}
+        min_area = AUTO_MIN_AREA * it['width'] * it['height']
+        proposals = []
+        for c, prob in zip(json.loads(m['classes']), probs):
+            cls = classes.get(c['id'])
+            if cls is None or cls['label_type'] not in ('mask', 'polygon'):
+                continue        # class deleted or changed since training
+            mask = prob > 0.5
+            if p['task_type'] == 'instance_segmentation':
+                n, labels = cv2.connectedComponents(mask.astype(np.uint8))
+                regions = [labels == k for k in range(1, n)]
+            else:
+                regions = [mask]
+            for region in regions:
+                if region.sum() < min_area:
+                    continue
+                try:
+                    geom = geometry.mask_to_geometry(region, cls['label_type'])
+                except geometry.GeometryError:
+                    continue
+                proposals.append({'class_id': cls['id'], 'geometry': geom,
+                                  'score': float(prob[region].mean()),
+                                  'area': float(region.mean())})
+        set_id = uuid.uuid4().hex
+        ctx.proposals[set_id] = {'item_id': item_id, 'user_id': user['id'],
+                                 'model': {**model_provenance(m), 'mode': 'automatic'},
+                                 'proposals': proposals, 'taken': set()}
+        while len(ctx.proposals) > MAX_PROPOSAL_SETS:
+            ctx.proposals.popitem(last=False)
+        audit.record(conn, 'item.auto_label', user=user, target=f'item:{item_id}',
+                     detail={'project_model_id': m['id'], 'proposals': len(proposals)})
+        return {'set': set_id, 'model_id': m['id'],
+                'proposals': [{'index': i, **pr} for i, pr in enumerate(proposals)]}
+
+    def take_proposal(ref: ProposalRef, item, user, cls) -> tuple[dict, dict]:
+        """(geometry, provenance) of an auto-label proposal being accepted."""
+        s = ctx.proposals.get(ref.set)
+        if s is None or (s['item_id'], s['user_id']) != (item['id'], user['id']):
+            raise HTTPException(400, 'from_proposal must be a proposal you requested on this '
+                                     'item (proposals expire; request new ones)')
+        if ref.index >= len(s['proposals']):
+            raise HTTPException(400, f'No proposal {ref.index}')
+        if ref.index in s['taken']:
+            raise HTTPException(409, 'That proposal is already saved')
+        geom = s['proposals'][ref.index]['geometry']
+        if geom['type'] != cls['label_type']:
+            raise HTTPException(400, f"That proposal is a {geom['type']}; "
+                                     f"{cls['name']!r} takes {cls['label_type']} labels")
+        s['taken'].add(ref.index)
+        return geom, s['model']
 
     # ── audit log ─────────────────────────────────────────────────────────
 

@@ -81,6 +81,7 @@ export interface Project {
   protocol: string;
   allowed_label_types: LabelType[];
   assist_model_id: number | null; // project model used for assisted labelling
+  auto_model_id: number | null; // automatic project model that proposes labels
 }
 
 export interface LabelClass {
@@ -145,6 +146,7 @@ export interface AnnotationModel {
 // ── project models ─────────────────────────────────────────────────────────
 
 export type ModelStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+export type ModelKind = 'interactive' | 'automatic';
 
 export interface Scores {
   objects: number;
@@ -155,9 +157,18 @@ export interface Scores {
   'noc@90': number;
 }
 
+// Automatic models: IoU of each class (in `classes` order) on the held-out images.
+export interface AutoScores {
+  images: number;
+  iou: number[];
+  miou: number;
+}
+
 export interface ProjectModel {
   id: number;
   project_id: number;
+  kind: ModelKind;
+  classes: { id: number; name: string }[] | null; // automatic: its outputs
   status: ModelStatus;
   base_model_type: string;
   base_checkpoint: string;
@@ -167,7 +178,7 @@ export interface ProjectModel {
   train_objects: number;
   train_items: number;
   held_out_items: number[];
-  metrics: { base: Scores; trained: Scores } | null;
+  metrics: { base: Scores; trained: Scores } | { trained: AutoScores } | null;
   adapter_file: string | null;
   adapter_sha256: string | null;
   error: string | null;
@@ -178,6 +189,18 @@ export interface ProjectModel {
 export interface ProjectModels {
   models: ProjectModel[];
   assist_model_id: number | null;
+  auto_model_id: number | null;
+  auto_data: {
+    classes: { id: number; name: string }[];
+    done_images: number;
+    labels: number;
+    train_images: number;
+    held_out_images: number;
+    default_steps: number;
+    min_images: number;
+    max_steps: number;
+    problems: string[];
+  };
   data: {
     assisted_annotations: number;
     trainable_objects: number;
@@ -192,6 +215,20 @@ export interface ProjectModels {
   };
   base_models: ModelRef[];
   training_id: number | null;
+}
+
+export interface Proposal {
+  index: number;
+  class_id: number;
+  geometry: Geometry;
+  score: number; // mean probability inside the region
+  area: number;  // share of the image
+}
+
+export interface ProposalSet {
+  set: string;
+  model_id: number;
+  proposals: Proposal[];
 }
 
 export interface AuditEntry {
@@ -348,7 +385,8 @@ export const api = {
                           protocol: string }) =>
     request<Project>('/projects', json('POST', body)),
   updateProject: (id: number, body: { name?: string; multi_label?: boolean; protocol?: string;
-                                      assist_model_id?: number | null }) =>
+                                      assist_model_id?: number | null;
+                                      auto_model_id?: number | null }) =>
     request<Project>(`/projects/${id}`, json('PATCH', body)),
   deleteProject: (id: number) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
   progress: (id: number) => request<Progress>(`/projects/${id}/progress`),
@@ -388,15 +426,19 @@ export const api = {
                           json('POST')),
   listAnnotations: (itemId: number) => request<Annotation[]>(`/items/${itemId}/annotations`),
   createAnnotation: (itemId: number,
-                     body: { class_id: number; geometry?: Geometry; from_session?: string }) =>
+                     body: { class_id: number; geometry?: Geometry; from_session?: string;
+                             from_proposal?: { set: string; index: number } }) =>
     request<Annotation>(`/items/${itemId}/annotations`, json('POST', body)),
+  autoLabel: (itemId: number) =>
+    request<ProposalSet>(`/items/${itemId}/auto-label`, json('POST')),
   updateAnnotation: (id: number, body: { class_id?: number; geometry?: Geometry }) =>
     request<Annotation>(`/annotations/${id}`, json('PATCH', body)),
   deleteAnnotation: (id: number) => request<void>(`/annotations/${id}`, { method: 'DELETE' }),
 
   // project models (admins)
   projectModels: (projectId: number) => request<ProjectModels>(`/projects/${projectId}/models`),
-  trainProjectModel: (projectId: number, body: { checkpoint?: string; steps?: number }) =>
+  trainProjectModel: (projectId: number,
+                      body: { kind: ModelKind; checkpoint?: string; steps?: number }) =>
     request<ProjectModel>(`/projects/${projectId}/models`, json('POST', body)),
   cancelProjectModel: (id: number) =>
     request<ProjectModel>(`/project-models/${id}/cancel`, json('POST')),

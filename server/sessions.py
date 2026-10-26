@@ -333,10 +333,12 @@ class ModelManager:
         return self._nets[key]
 
     def adapter_net(self, base_label: str, base_checkpoint: str, adapter_path: Path,
-                    adapter_sha256: str):
+                    adapter_sha256: str, kind: str = 'interactive'):
         """A separate copy of a SAM 2 base model with a project adapter
         applied (LoRA changes the network in place, so it can't share the
-        cached base). The adapter file must still have ``adapter_sha256``."""
+        cached base). The adapter file must still have ``adapter_sha256``.
+        ``kind`` 'automatic' returns (net, class prompts) of a click-free
+        model (``isegm.adaptation.promptless``)."""
         self._check_checkpoint(base_label, base_checkpoint)
         with self.lock:
             if adapter_sha256 in self._adapter_nets:
@@ -344,28 +346,33 @@ class ModelManager:
                 return self._adapter_nets[adapter_sha256]
         import torch
 
-        from isegm.adaptation import attach_adapter
+        from isegm.adaptation import attach_adapter, promptless
         from isegm.adaptation.lora import load_lora_state, set_lora_trainable
         data = Path(adapter_path).read_bytes()
         if hashlib.sha256(data).hexdigest() != adapter_sha256:
             raise ValueError(f'{Path(adapter_path).name} has changed since it was registered '
                              '(SHA-256 mismatch); not loading it')
         payload = torch.load(io.BytesIO(data), map_location='cpu', weights_only=True)
-        if payload.get('model_type') != 'sam2':
-            raise ValueError('Project models must be SAM 2 adapters')
+        if payload.get('model_type') != 'sam2' or payload.get('kind', 'interactive') != kind:
+            raise ValueError(f'Not a SAM 2 {kind} project model')
         net = utils.load_model_by_type(str(self.weights_dir / base_checkpoint), base_label,
                                        self.device)
-        attach_adapter(net, 'sam2', rank=payload['rank'])
-        missing, _ = load_lora_state(net, payload['lora_state'])
-        if missing:
-            raise ValueError(f'Adapter does not fit {base_label} ({len(missing)} layers missing)')
-        set_lora_trainable(net, False)
-        net.eval()
+        if kind == 'automatic':
+            loaded = (net, promptless.load(net, payload))
+        else:
+            attach_adapter(net, 'sam2', rank=payload['rank'])
+            missing, _ = load_lora_state(net, payload['lora_state'])
+            if missing:
+                raise ValueError(f'Adapter does not fit {base_label} '
+                                 f'({len(missing)} layers missing)')
+            set_lora_trainable(net, False)
+            net.eval()
+            loaded = net
         with self.lock:
-            self._adapter_nets[adapter_sha256] = net
+            self._adapter_nets[adapter_sha256] = loaded
             while len(self._adapter_nets) > self.max_adapter_nets:
                 self._adapter_nets.popitem(last=False)
-        return net
+        return loaded
 
     def _switch(self, net, model_label: str, checkpoint: Optional[str]) -> None:
         self.net = net

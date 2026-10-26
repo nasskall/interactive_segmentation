@@ -198,6 +198,11 @@ images, and *Mark done & next* jumps to the next unfinished one.
   finished model makes the project's assisted labelling use it, whatever
   model is loaded for everyone else; training runs in the background, one at
   a time, and needs at least 10 objects labelled with clicks.
+- **Automatic models:** the same tab trains SAM 2 to segment every mask or
+  polygon class with no clicks (a learned prompt per class), from the images
+  marked done, scored by per-class IoU on held-out ones. Once chosen,
+  *Auto-label* in the workspace proposes labels for an image; each becomes an
+  annotation only when the labeller accepts it.
 
 On first start with an empty `data/`, the server prints a one-time setup
 token. Create the first admin with it via `POST /api/auth/setup`; every other
