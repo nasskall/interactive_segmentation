@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { AssignBar, ClassesEditor, ExportPanel, NewProject, ProjectSettings, TeamProgress,
+import { AssignBar, ClassesEditor, ExportPanel, ModelsPanel, NewProject, ProjectSettings, TeamProgress,
          UploadPanel } from './Admin';
 import { api, setToken, TASK_LABELS, type Item, type ItemStatus, type Progress, type Project,
          type User } from './api';
@@ -151,7 +151,8 @@ export function Projects({ me }: { me: User }) {
 
 const STATUS_FILTERS: (ItemStatus | 'all')[] = ['all', 'todo', 'in_progress', 'done'];
 const TAB_LABELS: Record<ProjectTab, string> = {
-  items: 'Images', classes: 'Classes', team: 'Team', export: 'Export', settings: 'Settings',
+  items: 'Images', classes: 'Classes', team: 'Team', models: 'Models', export: 'Export',
+  settings: 'Settings',
 };
 
 export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: ProjectTab; me: User }) {
@@ -199,7 +200,10 @@ export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: Pr
     for (const i of shown) { if (allShownSelected) next2.delete(i.id); else next2.add(i.id); }
     setSelected(next2);
   };
-  const tabs: ProjectTab[] = admin ? ['items', 'classes', 'team', 'export', 'settings'] : ['items'];
+  // Project models learn segmentation, so only projects with mask or polygon labels get them.
+  const trainable = project.allowed_label_types.some((t) => t === 'mask' || t === 'polygon');
+  const tabs: ProjectTab[] = !admin ? ['items']
+    : ['items', 'classes', 'team', ...(trainable ? ['models' as const] : []), 'export', 'settings'];
 
   return (
     <div className="page">
@@ -229,6 +233,7 @@ export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: Pr
       {tab === 'classes' && admin && <ClassesEditor project={project} />}
       {tab === 'settings' && admin && <ProjectSettings project={project} onSaved={setProject} />}
       {tab === 'team' && admin && <TeamProgress progress={progress} items={items} />}
+      {tab === 'models' && admin && trainable && <ModelsPanel project={project} onChanged={setProject} />}
       {tab === 'export' && admin && <ExportPanel project={project} progress={progress} />}
 
       {(tab === 'items' || !admin) && (

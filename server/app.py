@@ -147,7 +147,8 @@ def create_app(manager: ModelManager, static_dir: Optional[Path] = None,
 
     @app.post('/api/models/load')
     def load_model(body: LoadModelIn, user=Depends(admin_only)):
-        """Switch the model every session uses (admins only)."""
+        """Switch the model every session uses (admins only); sessions on a
+        project's own model keep it."""
         try:
             if body.model_type == ENSEMBLE:
                 manager.load_ensemble([(m.model_type, m.checkpoint) for m in body.members or []],
@@ -231,7 +232,7 @@ def create_app(manager: ModelManager, static_dir: Optional[Path] = None,
     def finish_object(sid: str, user=Depends(signed_in)):
         s = own(sid, user)
         with manager.lock:
-            s.controller.finish_object()
+            s.finish_object()
             return s.state()
 
     @app.post('/api/sessions/{sid}/reset')

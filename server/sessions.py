@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import os
 import threading
 import time
@@ -121,10 +122,49 @@ class Session:
     use_zoom_in: bool = True
     last_used: float = field(default_factory=time.time)
     owner_id: Optional[int] = None          # account that opened it (None without accounts)
+    model_label: str = ''                   # model type the session's predictor is built for
+    # Set when the session runs its own model (a project model) rather than
+    # the shared one: what to record as provenance and to show the labeller.
+    provenance: Optional[dict] = None
+    model_name: Optional[str] = None
+    # Prompts of the objects finished since the last save, oldest first.
+    finished_prompts: list = field(default_factory=list)
 
     @property
     def image(self) -> np.ndarray:
         return self.controller.image
+
+    @property
+    def pinned(self) -> bool:
+        """Runs its own model: switching the shared model leaves it alone."""
+        return self.provenance is not None
+
+    def current_prompts(self) -> Optional[dict]:
+        """Clicks (``[x, y, positive]``, in order) and box of the object in
+        progress, in session-image pixels; None without one. An automatic
+        mask has neither."""
+        c = self.controller
+        if not c.is_incomplete_mask:
+            return None
+        box = getattr(c.predictor, 'box', None)
+        return {'clicks': [[int(k.coords[1]), int(k.coords[0]), bool(k.is_positive)]
+                           for k in c.clicker.clicks_list],
+                'box': [float(v) for v in box] if box is not None else None}
+
+    def finish_object(self) -> None:
+        prompts = self.current_prompts()
+        before = self.controller.object_count
+        self.controller.finish_object()
+        if prompts is not None and self.controller.object_count > before:
+            self.finished_prompts.append(prompts)
+
+    def take_prompts(self) -> list[dict]:
+        """Prompts of every object in the result mask (finished ones, then
+        the one in progress), forgetting them for the next save."""
+        current = self.current_prompts()
+        prompts = self.finished_prompts + ([current] if current is not None else [])
+        self.finished_prompts = []
+        return prompts
 
     def overlay_png(self) -> bytes:
         """RGBA overlay: finished objects + current object coloured by label,
@@ -168,6 +208,7 @@ class Session:
             'can_undo': bool(c.states),
             'prob_thresh': self.prob_thresh,
             'use_zoom_in': self.use_zoom_in,
+            'model': self.model_name,
             'overlay': 'data:image/png;base64,' + base64.b64encode(self.overlay_png()).decode(),
         }
 
@@ -196,6 +237,9 @@ class ModelManager:
             self._nets[(model_label, checkpoint)] = net
         self.ensemble_members: Optional[list[tuple[str, str]]] = None
         self._sha256: dict[tuple[str, int, int], str] = {}
+        # Project models (base + adapter) by adapter SHA-256, least recently used first.
+        self._adapter_nets: OrderedDict[str, object] = OrderedDict()
+        self.max_adapter_nets = 2
 
     # ── provenance ─────────────────────────────────────────────────────────
 
@@ -214,6 +258,11 @@ class ModelManager:
                     h.update(chunk)
             self._sha256[key] = h.hexdigest()
         return self._sha256[key]
+
+    def session_provenance(self, s: Session) -> dict:
+        """What proposed the masks of session ``s``: its own model if pinned,
+        the shared model otherwise."""
+        return s.provenance if s.pinned else self.provenance()
 
     def provenance(self) -> dict:
         """Which model is proposing masks right now: type, checkpoint file
@@ -283,11 +332,49 @@ class ModelManager:
             self._nets[key] = net
         return self._nets[key]
 
+    def adapter_net(self, base_label: str, base_checkpoint: str, adapter_path: Path,
+                    adapter_sha256: str):
+        """A separate copy of a SAM 2 base model with a project adapter
+        applied (LoRA changes the network in place, so it can't share the
+        cached base). The adapter file must still have ``adapter_sha256``."""
+        self._check_checkpoint(base_label, base_checkpoint)
+        with self.lock:
+            if adapter_sha256 in self._adapter_nets:
+                self._adapter_nets.move_to_end(adapter_sha256)
+                return self._adapter_nets[adapter_sha256]
+        import torch
+
+        from isegm.adaptation import attach_adapter
+        from isegm.adaptation.lora import load_lora_state, set_lora_trainable
+        data = Path(adapter_path).read_bytes()
+        if hashlib.sha256(data).hexdigest() != adapter_sha256:
+            raise ValueError(f'{Path(adapter_path).name} has changed since it was registered '
+                             '(SHA-256 mismatch); not loading it')
+        payload = torch.load(io.BytesIO(data), map_location='cpu', weights_only=True)
+        if payload.get('model_type') != 'sam2':
+            raise ValueError('Project models must be SAM 2 adapters')
+        net = utils.load_model_by_type(str(self.weights_dir / base_checkpoint), base_label,
+                                       self.device)
+        attach_adapter(net, 'sam2', rank=payload['rank'])
+        missing, _ = load_lora_state(net, payload['lora_state'])
+        if missing:
+            raise ValueError(f'Adapter does not fit {base_label} ({len(missing)} layers missing)')
+        set_lora_trainable(net, False)
+        net.eval()
+        with self.lock:
+            self._adapter_nets[adapter_sha256] = net
+            while len(self._adapter_nets) > self.max_adapter_nets:
+                self._adapter_nets.popitem(last=False)
+        return net
+
     def _switch(self, net, model_label: str, checkpoint: Optional[str]) -> None:
         self.net = net
         self.model_label = model_label
         self.checkpoint = checkpoint
         for s in self._sessions.values():
+            if s.pinned:
+                continue
+            s.model_label = model_label
             s.controller.predictor_params = predictor_params_for(
                 model_label, s.prob_thresh, s.use_zoom_in)
             s.controller.set_net(net)
@@ -327,18 +414,23 @@ class ModelManager:
     # ── sessions ───────────────────────────────────────────────────────────
 
     def create_session(self, image_rgb: np.ndarray, filename: str,
-                       owner_id: Optional[int] = None) -> Session:
+                       owner_id: Optional[int] = None,
+                       own_model: Optional[tuple] = None) -> Session:
+        """``own_model`` = (net, model type, provenance, display name) runs
+        the session on that model instead of the shared one."""
         original_size = image_rgb.shape[:2]
         image = resize_longest(image_rgb)
         with self.lock:
+            net, label, provenance, name = own_model or (self.net, self.model_label, None, None)
             ctrl = InteractiveController(
-                self.net, self.device,
-                predictor_params=predictor_params_for(self.model_label, 0.5, True),
+                net, self.device,
+                predictor_params=predictor_params_for(label, 0.5, True),
                 update_image_callback=lambda *a, **k: None,
             )
             ctrl.set_image(image)
             sid = uuid.uuid4().hex
-            session = Session(sid, ctrl, filename, original_size, owner_id=owner_id)
+            session = Session(sid, ctrl, filename, original_size, owner_id=owner_id,
+                              model_label=label, provenance=provenance, model_name=name)
             self._sessions[sid] = session
             while len(self._sessions) > self.max_sessions:
                 self._sessions.popitem(last=False)
@@ -375,5 +467,5 @@ class ModelManager:
                 # A new predictor can't continue the old click sequence, so
                 # the in-progress object is dropped.
                 s.controller.reset_predictor(
-                    predictor_params_for(self.model_label, s.prob_thresh, s.use_zoom_in))
+                    predictor_params_for(s.model_label, s.prob_thresh, s.use_zoom_in))
                 s.controller.reset_last_object(update_image=False)

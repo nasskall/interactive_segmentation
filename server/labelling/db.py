@@ -19,6 +19,7 @@ TASK_TYPES = ('classification', 'detection', 'semantic_segmentation',
 LABEL_TYPES = ('tag', 'box', 'polygon', 'mask')
 ROLES = ('admin', 'labeller')
 ITEM_STATUSES = ('todo', 'in_progress', 'done')
+MODEL_STATUSES = ('queued', 'running', 'done', 'failed', 'cancelled')
 
 # Which label types each task type can use.
 ALLOWED_LABEL_TYPES = {
@@ -53,7 +54,9 @@ CREATE TABLE IF NOT EXISTS projects (
     multi_label INTEGER NOT NULL DEFAULT 0,
     protocol    TEXT NOT NULL DEFAULT '',
     created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    -- project model that assisted labelling uses (NULL: the shared model)
+    assist_model_id INTEGER REFERENCES project_models(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS classes (
@@ -89,10 +92,36 @@ CREATE TABLE IF NOT EXISTS annotations (
     geometry    TEXT NOT NULL,
     source      TEXT NOT NULL CHECK (source IN ('manual', 'assisted')),
     model       TEXT,   -- assisted only: JSON provenance of the model that proposed it
+    -- assisted only: JSON {{"image": role, "objects": [{{"clicks": [[x, y, positive], ...],
+    -- "box": [x0, y0, x1, y1] | null}}]}}, in the item's pixels, in the order made
+    prompts     TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS annotations_item ON annotations(item_id);
+
+-- Project models (see training.py): SAM 2 fine-tuned on a project's clicks.
+CREATE TABLE IF NOT EXISTS project_models (
+    id              INTEGER PRIMARY KEY,
+    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    status          TEXT NOT NULL CHECK (status IN {MODEL_STATUSES}),
+    base_model_type TEXT NOT NULL,
+    base_checkpoint TEXT NOT NULL,
+    base_sha256     TEXT,
+    steps           INTEGER NOT NULL,
+    progress        TEXT,   -- JSON: phase, done, total, loss
+    train_objects   INTEGER NOT NULL,
+    train_items     INTEGER NOT NULL,
+    held_out_items  TEXT NOT NULL,   -- JSON list of item ids
+    metrics         TEXT,   -- JSON: held-out scores of 'base' and 'trained'
+    adapter_file    TEXT,   -- relative to the models directory
+    adapter_sha256  TEXT,
+    error           TEXT,
+    created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at      TEXT NOT NULL,
+    finished_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS project_models_project ON project_models(project_id);
 """
 
 
@@ -115,6 +144,12 @@ class Database:
         cols = {r['name'] for r in conn.execute('PRAGMA table_info(annotations)')}
         if 'model' not in cols:
             conn.execute('ALTER TABLE annotations ADD COLUMN model TEXT')
+        if 'prompts' not in cols:
+            conn.execute('ALTER TABLE annotations ADD COLUMN prompts TEXT')
+        cols = {r['name'] for r in conn.execute('PRAGMA table_info(projects)')}
+        if 'assist_model_id' not in cols:
+            conn.execute('ALTER TABLE projects ADD COLUMN assist_model_id INTEGER '
+                         'REFERENCES project_models(id) ON DELETE SET NULL')
 
     def connect(self) -> sqlite3.Connection:
         # FastAPI may run a request's dependency and endpoint on different

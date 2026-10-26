@@ -211,6 +211,11 @@ kbd {
          border: 1px solid var(--border); color: var(--muted); }
 .badge.status-in_progress { color: var(--warn); border-color: currentColor; }
 .badge.status-done { color: var(--ok); border-color: currentColor; }
+.badge.status-running, .badge.status-queued { color: var(--warn); border-color: currentColor; }
+.badge.status-failed { color: var(--error); border-color: currentColor; }
+table.models td { vertical-align: top; }
+.better { color: var(--ok); }
+.worse { color: var(--error); }
 
 .segmented { display: flex; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 6px;
              overflow: hidden; }
@@ -300,7 +305,8 @@ legend { font-size: 13px; margin-bottom: 6px; }
 .task-option.active { border-color: var(--accent); background: var(--hover);
                       box-shadow: inset 0 0 0 1px var(--accent); }
 
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 16px 0 4px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border);
+        margin: 16px 0 4px; }
 .tabs a { padding: 8px 12px; color: var(--muted); text-decoration: none; font-size: 14px;
           border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tabs a.active { color: var(--text); border-bottom-color: var(--accent); }

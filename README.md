@@ -188,7 +188,16 @@ images, and *Mark done & next* jumps to the next unfinished one.
 - **Assisted labelling:** `POST /api/items/{id}/assist` opens a segmentation
   session on a project image. Click with any loaded model, then save with
   `{"class_id": ..., "from_session": "<session id>"}` and the mask is stored as
-  the class's label type (mask, bounding box or polygon) at full resolution.
+  the class's label type (mask, bounding box or polygon) at full resolution,
+  together with the clicks that made it.
+- **Project models:** on a segmentation project's *Models* tab an admin
+  trains SAM 2 (LoRA on the prompt encoder and mask decoder) on the clicks
+  the labellers recorded and the masks they saved. A fifth of the images are
+  held out, and the base and trained models are both scored on them with a
+  simulated labeller (clicks to 90% IoU, first-click IoU). Choosing a
+  finished model makes the project's assisted labelling use it, whatever
+  model is loaded for everyone else; training runs in the background, one at
+  a time, and needs at least 10 objects labelled with clicks.
 
 On first start with an empty `data/`, the server prints a one-time setup
 token. Create the first admin with it via `POST /api/auth/setup`; every other

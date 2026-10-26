@@ -22,6 +22,7 @@ export interface SessionState {
   can_undo: boolean;
   prob_thresh: number;
   use_zoom_in: boolean;
+  model: string | null; // set when the session runs a project model instead of the shared one
   overlay: string; // data: URL, RGBA PNG
 }
 
@@ -79,6 +80,7 @@ export interface Project {
   multi_label: boolean;
   protocol: string;
   allowed_label_types: LabelType[];
+  assist_model_id: number | null; // project model used for assisted labelling
 }
 
 export interface LabelClass {
@@ -122,7 +124,13 @@ export interface Annotation {
   geometry: Geometry;
   source: 'manual' | 'assisted';
   model: AnnotationModel | null; // assisted only: the model that proposed it
+  prompts: Prompts | null; // assisted only: the clicks (and box) behind each object
   created_at: string;
+}
+
+export interface Prompts {
+  image: string;
+  objects: { clicks: [number, number, boolean][]; box: [number, number, number, number] | null }[];
 }
 
 export interface AnnotationModel {
@@ -131,6 +139,59 @@ export interface AnnotationModel {
   sha256?: string | null;
   fusion?: Fusion;
   members?: { model_type: string; checkpoint: string; sha256: string | null }[];
+  adapter?: { project_model_id: number; file: string; sha256: string };
+}
+
+// ── project models ─────────────────────────────────────────────────────────
+
+export type ModelStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface Scores {
+  objects: number;
+  'iou@1': number;
+  'iou@3': number;
+  'iou@5': number;
+  'noc@85': number;
+  'noc@90': number;
+}
+
+export interface ProjectModel {
+  id: number;
+  project_id: number;
+  status: ModelStatus;
+  base_model_type: string;
+  base_checkpoint: string;
+  base_sha256: string | null;
+  steps: number;
+  progress: { phase: string; done: number; total: number; loss: number | null } | null;
+  train_objects: number;
+  train_items: number;
+  held_out_items: number[];
+  metrics: { base: Scores; trained: Scores } | null;
+  adapter_file: string | null;
+  adapter_sha256: string | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface ProjectModels {
+  models: ProjectModel[];
+  assist_model_id: number | null;
+  data: {
+    assisted_annotations: number;
+    trainable_objects: number;
+    items: number;
+    train_objects: number;
+    held_out_objects: number;
+    held_out_items: number;
+    default_steps: number;
+    min_objects: number;
+    max_steps: number;
+    problems: string[];
+  };
+  base_models: ModelRef[];
+  training_id: number | null;
 }
 
 export interface AuditEntry {
@@ -286,7 +347,8 @@ export const api = {
   createProject: (body: { name: string; task_type: TaskType; multi_label: boolean;
                           protocol: string }) =>
     request<Project>('/projects', json('POST', body)),
-  updateProject: (id: number, body: { name?: string; multi_label?: boolean; protocol?: string }) =>
+  updateProject: (id: number, body: { name?: string; multi_label?: boolean; protocol?: string;
+                                      assist_model_id?: number | null }) =>
     request<Project>(`/projects/${id}`, json('PATCH', body)),
   deleteProject: (id: number) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
   progress: (id: number) => request<Progress>(`/projects/${id}/progress`),
@@ -331,6 +393,14 @@ export const api = {
   updateAnnotation: (id: number, body: { class_id?: number; geometry?: Geometry }) =>
     request<Annotation>(`/annotations/${id}`, json('PATCH', body)),
   deleteAnnotation: (id: number) => request<void>(`/annotations/${id}`, { method: 'DELETE' }),
+
+  // project models (admins)
+  projectModels: (projectId: number) => request<ProjectModels>(`/projects/${projectId}/models`),
+  trainProjectModel: (projectId: number, body: { checkpoint?: string; steps?: number }) =>
+    request<ProjectModel>(`/projects/${projectId}/models`, json('POST', body)),
+  cancelProjectModel: (id: number) =>
+    request<ProjectModel>(`/project-models/${id}/cancel`, json('POST')),
+  deleteProjectModel: (id: number) => request<void>(`/project-models/${id}`, { method: 'DELETE' }),
 
   // audit log (admins)
   listAudit: (opts: { action?: string; before_id?: number; limit?: number } = {}) => {

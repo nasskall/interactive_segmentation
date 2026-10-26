@@ -1,9 +1,10 @@
-// Admin screens: projects, classes, uploads, assignment, team progress, exports, users.
+// Admin screens: projects, classes, uploads, assignment, team progress, project models,
+// exports, users.
 
-import { useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react';
 import { api, TASK_FORMATS, TASK_LABELS, type AuditEntry, type ExportFormat, type Item,
-         type LabelClass, type LabelType, type Progress, type Project, type TaskType,
-         type User } from './api';
+         type LabelClass, type LabelType, type ModelStatus, type Progress, type Project,
+         type ProjectModel, type ProjectModels, type TaskType, type User } from './api';
 import { go, href, saveBlob } from './lib';
 
 const TASK_HELP: Record<TaskType, string> = {
@@ -500,6 +501,177 @@ export function TeamProgress({ progress, items }: { progress: Progress | undefin
       {progress.by_labeller.length === 0 && <p className="muted">Nobody is assigned yet. Select
         images on the Images tab and assign them.</p>}
       <p className="meta">{unassigned} of {items.length} images unassigned.</p>
+    </div>
+  );
+}
+
+// ── project models ─────────────────────────────────────────────────────────
+
+const STATUS_LABELS: Record<ModelStatus, string> = {
+  queued: 'queued', running: 'training', done: 'ready', failed: 'failed', cancelled: 'cancelled',
+};
+
+/** "5.62 → 3.17" coloured by whether the trained model is better. */
+function Change({ base, trained, lowerIsBetter, digits }: {
+  base: number; trained: number; lowerIsBetter: boolean; digits: number;
+}) {
+  const better = lowerIsBetter ? trained < base : trained > base;
+  const same = trained.toFixed(digits) === base.toFixed(digits);
+  return (
+    <span>{base.toFixed(digits)} → <span className={same ? '' : better ? 'better' : 'worse'}>
+      {trained.toFixed(digits)}</span></span>
+  );
+}
+
+function ModelScores({ m }: { m: ProjectModel }) {
+  if (!m.metrics) return <span className="muted">—</span>;
+  const { base, trained } = m.metrics;
+  return (
+    <div className="small">
+      <div title="Mean clicks to reach 90% IoU (lower is better)">
+        Clicks to 90%: <Change base={base['noc@90']} trained={trained['noc@90']} lowerIsBetter digits={2} />
+      </div>
+      <div title="Mean IoU after the first click (higher is better)">
+        1st-click IoU: <Change base={base['iou@1']} trained={trained['iou@1']} lowerIsBetter={false}
+                               digits={3} />
+      </div>
+      <div className="meta">{base.objects} held-out objects on {m.held_out_items.length} images</div>
+    </div>
+  );
+}
+
+function ModelStatusCell({ m }: { m: ProjectModel }) {
+  const p = m.progress;
+  return (
+    <div>
+      <span className={`badge status-${m.status}`}>{STATUS_LABELS[m.status]}</span>
+      {m.status === 'running' && p && (
+        <div className="meta">{p.phase} {p.done}/{p.total}
+          {p.loss !== null && ` · loss ${p.loss.toFixed(3)}`}</div>
+      )}
+      {m.error && <div className="error-text small">{m.error}</div>}
+    </div>
+  );
+}
+
+export function ModelsPanel({ project, onChanged }: {
+  project: Project; onChanged: (p: Project) => void;
+}) {
+  const [info, setInfo] = useState<ProjectModels | null>(null);
+  const [checkpoint, setCheckpoint] = useState('');
+  const [steps, setSteps] = useState('');
+  const { busy, error, setError, run } = useAsync();
+
+  const reload = useCallback(() => api.projectModels(project.id).then(setInfo), [project.id]);
+  useEffect(() => { reload().catch((e) => setError(e.message)); }, [reload, setError]);
+  const active = info?.models.some((m) => m.status === 'queued' || m.status === 'running');
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => { reload().catch(() => {}); }, 3000);
+    return () => clearInterval(t);
+  }, [active, reload]);
+
+  if (!info) return <div className="card">{error ? <p className="error-text">{error}</p>
+                                                : <span className="muted">Loading…</span>}</div>;
+  const d = info.data;
+  const inUse = info.models.find((m) => m.id === info.assist_model_id);
+  const otherTraining = info.training_id !== null && !info.models.some((m) => m.id === info.training_id);
+  const stepsN = steps ? Number(steps) : undefined;
+  const stepsOk = stepsN === undefined || (Number.isInteger(stepsN) && stepsN >= 10 && stepsN <= d.max_steps);
+
+  const train = () => run(async () => {
+    await api.trainProjectModel(project.id, { checkpoint: checkpoint || undefined, steps: stepsN });
+    await reload();
+  });
+  const choose = (id: number | null) => run(async () => {
+    onChanged(await api.updateProject(project.id, { assist_model_id: id }));
+    await reload();
+  });
+  const act = (fn: () => Promise<unknown>) => run(async () => { await fn(); await reload(); });
+
+  return (
+    <div className="stack">
+      <div className="card form">
+        <h2 className="form-title">Train a model for this project</h2>
+        <p className="meta">Fine-tunes SAM 2 on the clicks your labellers made and the masks they
+          saved, corrections included. A fifth of the images are held out: the base model and the
+          trained one are both scored on them with a simulated labeller, and they are never
+          trained on.</p>
+        <p>{d.trainable_objects} labelled objects on {d.items} images can be used
+          {d.trainable_objects > 0 && <> ({d.train_objects} to train, {d.held_out_objects} held out
+            on {d.held_out_items} images)</>}.</p>
+        <p className="meta">Only objects made with clicks in assisted labelling and saved one per
+          label count; boxes, automatic masks, manual drawings and older labels saved before clicks
+          were recorded do not.</p>
+        {d.problems.map((p) => <p key={p} className="error-text">{p}</p>)}
+        {info.base_models.length === 0 && (
+          <p className="error-text">No SAM 2 checkpoint in the server's weights folder.</p>)}
+        <div className="row">
+          {info.base_models.length > 1 && (
+            <label>Base model
+              <select value={checkpoint} onChange={(e) => setCheckpoint(e.target.value)}>
+                {info.base_models.map((b, i) => (
+                  <option key={b.checkpoint} value={i === 0 ? '' : b.checkpoint}>
+                    {b.model_type} · {b.checkpoint}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label>Training steps
+            <input type="number" min={10} max={d.max_steps} value={steps}
+                   placeholder={String(d.default_steps)} onChange={(e) => setSteps(e.target.value)} />
+          </label>
+        </div>
+        <p className="meta">Each step takes about a second on a CPU; the images are encoded once
+          first.</p>
+        {otherTraining && <p className="meta">Another project's model is training; one runs at a
+          time.</p>}
+        {error && <p className="error-text">{error}</p>}
+        <div className="row-end">
+          <button className="primary" onClick={train}
+                  disabled={busy || d.problems.length > 0 || info.training_id !== null
+                            || info.base_models.length === 0 || !stepsOk}>Train</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <p>Assisted labelling uses{' '}
+          {inUse ? <strong>project model #{inUse.id}</strong> : 'the shared model'}.
+          {inUse && <> <button disabled={busy} onClick={() => choose(null)}>Use the shared model</button></>}
+        </p>
+        {info.models.length === 0
+          ? <p className="muted">No models trained yet.</p>
+          : (
+            <table className="items models">
+              <thead><tr><th>Model</th><th>Held-out score (base → trained)</th><th>Trained on</th>
+                <th>Status</th><th /></tr></thead>
+              <tbody>
+                {info.models.map((m) => (
+                  <tr key={m.id} className="static">
+                    <td>#{m.id}<div className="meta">{m.base_model_type}</div>
+                      <div className="meta">{m.created_at.slice(0, 16).replace('T', ' ')}</div></td>
+                    <td><ModelScores m={m} /></td>
+                    <td className="small">{m.train_objects} objects, {m.train_items} images
+                      <div className="meta">{m.steps} steps</div></td>
+                    <td><ModelStatusCell m={m} /></td>
+                    <td><div className="actions">
+                      {(m.status === 'queued' || m.status === 'running') && (
+                        <button disabled={busy} onClick={() => act(() => api.cancelProjectModel(m.id))}>
+                          Cancel</button>)}
+                      {m.status === 'done' && m.id !== info.assist_model_id && (
+                        <button className="primary" disabled={busy} onClick={() => choose(m.id)}>
+                          Use for labelling</button>)}
+                      {m.id === info.assist_model_id && <span className="badge status-done">in use</span>}
+                      {m.status !== 'queued' && m.status !== 'running' && m.id !== info.assist_model_id && (
+                        <ConfirmButton label="Delete" confirm="Delete this model?" disabled={busy}
+                                       onConfirm={() => act(() => api.deleteProjectModel(m.id))} />)}
+                    </div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+      </div>
     </div>
   );
 }

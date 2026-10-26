@@ -13,7 +13,14 @@ item's image. Saving an annotation with ``from_session`` turns that
 session's mask into the class's label type (mask, box or polygon) at the
 original resolution, then clears the session for the next object. The
 annotation records which model proposed it (``model``: type, checkpoint and
-SHA-256).
+SHA-256) and the clicks (and box) that made each object (``prompts``, in the
+item's pixels).
+
+Project models (``training.py``): admins train SAM 2 on a project's recorded
+clicks (``POST /projects/{id}/models``), compare it with the base model on
+held-out images, and choose it as the project's assist model
+(``PATCH /projects/{id}`` with ``assist_model_id``). Assist sessions on that
+project then run on it, whatever the shared model is.
 
 Security events and every change to accounts, projects, items and
 annotations go to the hash-chained audit log (``audit.py``), which admins
@@ -26,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import sqlite3
 import tempfile
 from dataclasses import dataclass, field
@@ -40,11 +48,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from server.labelling import audit, auth, export, geometry
+from server.labelling import audit, auth, export, geometry, training
 from server.labelling.db import (ALLOWED_LABEL_TYPES, ITEM_STATUSES, ROLES, TASK_TYPES,
                                  Database, now)
 from server.labelling.storage import ImageError, ImageStore, decode, extension
-from server.sessions import ModelManager
+from server.sessions import ModelManager, guess_model_type
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 USERNAME_PATTERN = r'^[A-Za-z0-9_.-]{3,32}$'
@@ -94,6 +102,12 @@ class ProjectPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     multi_label: Optional[bool] = None
     protocol: Optional[str] = None
+    assist_model_id: Optional[int] = None   # a finished project model, or null for the shared one
+
+
+class TrainIn(BaseModel):
+    checkpoint: Optional[str] = None        # SAM 2 base checkpoint; default: the first one
+    steps: Optional[int] = Field(default=None, ge=10, le=training.MAX_STEPS)
 
 
 class ClassIn(BaseModel):
@@ -141,7 +155,7 @@ def project_out(r: sqlite3.Row) -> dict:
     return {'id': r['id'], 'name': r['name'], 'task_type': r['task_type'],
             'multi_label': bool(r['multi_label']), 'protocol': r['protocol'],
             'allowed_label_types': list(ALLOWED_LABEL_TYPES[r['task_type']]),
-            'created_at': r['created_at']}
+            'assist_model_id': r['assist_model_id'], 'created_at': r['created_at']}
 
 
 def class_out(r: sqlite3.Row) -> dict:
@@ -164,6 +178,7 @@ def annotation_out(r: sqlite3.Row) -> dict:
             'labeller_id': r['labeller_id'], 'geometry': json.loads(r['geometry']),
             'source': r['source'],
             'model': json.loads(r['model']) if r['model'] else None,
+            'prompts': json.loads(r['prompts']) if r['prompts'] else None,
             'created_at': r['created_at'], 'updated_at': r['updated_at']}
 
 
@@ -175,8 +190,9 @@ class LabellingContext:
     images: ImageStore
     manager: ModelManager
     setup_token: Optional[str] = None
-    # assist session id -> (item id, user id)
-    assist_sessions: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # assist session id -> (item id, user id, image role)
+    assist_sessions: dict[str, tuple[int, int, str]] = field(default_factory=dict)
+    training: Optional[training.TrainingRunner] = None
     throttle: auth.LoginThrottle = field(default_factory=auth.LoginThrottle)
     # FastAPI dependencies, shared with the segmentation endpoints in app.py.
     get_db: Optional[Callable] = None
@@ -193,6 +209,9 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
     data_dir = Path(data_dir)
     ctx = LabellingContext(Database(data_dir / 'labelling.db'),
                            ImageStore(data_dir / 'items'), manager)
+    models_dir = data_dir / 'models'
+    ctx.training = training.TrainingRunner(ctx.db, ctx.images, models_dir, manager.weights_dir,
+                                           manager.device)
     with ctx.db.connect() as conn:
         if conn.execute('SELECT COUNT(*) FROM users').fetchone()[0] == 0:
             ctx.setup_token = secrets.token_urlsafe(16)
@@ -412,6 +431,15 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
     def update_project(project_id: int, body: ProjectPatch, user=Depends(admin_user),
                        conn=Depends(get_db, scope='function')):
         get_project(conn, project_id, user)
+        if 'assist_model_id' in body.model_fields_set and body.assist_model_id is not None:
+            m = conn.execute('SELECT status FROM project_models WHERE id = ? AND project_id = ?',
+                             (body.assist_model_id, project_id)).fetchone()
+            if m is None or m['status'] != 'done':
+                raise HTTPException(400, f'Model {body.assist_model_id} is not a finished '
+                                         'model of this project')
+        if 'assist_model_id' in body.model_fields_set:
+            conn.execute('UPDATE projects SET assist_model_id = ? WHERE id = ?',
+                         (body.assist_model_id, project_id))
         try:
             for col in ('name', 'protocol', 'multi_label'):
                 value = getattr(body, col)
@@ -429,12 +457,18 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         p = get_project(conn, project_id, user)
         item_ids = [r['id'] for r in conn.execute('SELECT id FROM items WHERE project_id = ?',
                                                   (project_id,))]
+        running = ctx.training.running_id
+        if running is not None and conn.execute(
+                'SELECT 1 FROM project_models WHERE id = ? AND project_id = ?',
+                (running, project_id)).fetchone():
+            raise HTTPException(409, 'A model of this project is training; cancel it first')
         conn.execute('DELETE FROM projects WHERE id = ?', (project_id,))
         audit.record(conn, 'project.delete', user=user, target=f'project:{project_id}',
                      detail={'name': p['name'], 'items': len(item_ids)})
         conn.commit()
         for item_id in item_ids:
             ctx.images.delete(item_id)
+        shutil.rmtree(models_dir / f'project_{project_id}', ignore_errors=True)
         return Response(status_code=204)
 
     @router.get('/projects/{project_id}/progress')
@@ -666,27 +700,55 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         files = json.loads(it['files'])
         if image not in files:
             raise HTTPException(400, f"Choose one of: {', '.join(files)}")
+        p = conn.execute('SELECT assist_model_id FROM projects WHERE id = ?',
+                         (it['project_id'],)).fetchone()
+        own_model = project_model(conn, p['assist_model_id']) if p['assist_model_id'] else None
         session = ctx.manager.create_session(ctx.images.load_rgb(item_id, files[image]),
-                                             f"{it['name']}_{image}", owner_id=user['id'])
+                                             f"{it['name']}_{image}", owner_id=user['id'],
+                                             own_model=own_model)
         ctx.assist_sessions = {sid: v for sid, v in ctx.assist_sessions.items()
                                if ctx.manager.has_session(sid)}
-        ctx.assist_sessions[session.id] = (item_id, user['id'])
+        ctx.assist_sessions[session.id] = (item_id, user['id'], image)
         return session.state()
 
-    def mask_from_session(sid: str, item, user) -> np.ndarray:
+    def project_model(conn, model_id: int) -> tuple:
+        """``own_model`` for a session on project model ``model_id``."""
+        m = conn.execute('SELECT * FROM project_models WHERE id = ?', (model_id,)).fetchone()
+        try:
+            net = ctx.manager.adapter_net(m['base_model_type'], m['base_checkpoint'],
+                                          models_dir / m['adapter_file'], m['adapter_sha256'])
+        except (ValueError, OSError) as exc:
+            raise HTTPException(409, f'Project model {model_id} cannot be loaded: {exc}')
+        provenance = {'model_type': m['base_model_type'], 'checkpoint': m['base_checkpoint'],
+                      'sha256': m['base_sha256'],
+                      'adapter': {'project_model_id': m['id'], 'file': m['adapter_file'],
+                                  'sha256': m['adapter_sha256']}}
+        return net, m['base_model_type'], provenance, f"Project model #{m['id']} ({m['base_model_type']})"
+
+    def assisted_from_session(sid: str, item, user) -> tuple[np.ndarray, dict, dict]:
+        """(mask at the item's resolution, prompts, model provenance) of an
+        assist session; clears the session for the next object."""
         owner = ctx.assist_sessions.get(sid)
-        if owner != (item['id'], user['id']):
+        if owner is None or owner[:2] != (item['id'], user['id']):
             raise HTTPException(400, 'from_session must be an assist session you opened '
                                      'on this item')
         session = ctx.manager.get(sid)
         with ctx.manager.lock:
             mask = session.controller.result_mask > 0
+            sh, sw = mask.shape
             h, w = item['height'], item['width']
             mask = cv2.resize(mask.astype(np.uint8), (w, h),
                               interpolation=cv2.INTER_NEAREST).astype(bool)
+            sx, sy = w / sw, h / sh
+            objects = [{'clicks': [[min(w - 1, int(x * sx)), min(h - 1, int(y * sy)), pos]
+                                   for x, y, pos in o['clicks']],
+                        'box': ([o['box'][0] * sx, o['box'][1] * sy, o['box'][2] * sx,
+                                 o['box'][3] * sy] if o['box'] else None)}
+                       for o in session.take_prompts()]
+            provenance = ctx.manager.session_provenance(session)
             # Start the next object from a clean slate (keeps SAM's embedding).
             session.controller.clear_objects()
-        return mask
+        return mask, {'image': owner[2], 'objects': objects}, provenance
 
     # ── annotations ───────────────────────────────────────────────────────
 
@@ -705,11 +767,12 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         cls = get_class(conn, body.class_id, p['id'])
         if (body.geometry is None) == (body.from_session is None) and cls['label_type'] != 'tag':
             raise HTTPException(400, 'Give either geometry or from_session')
+        prompts = None
         try:
             if body.from_session is not None:
-                geom = geometry.mask_to_geometry(mask_from_session(body.from_session, it, user),
-                                                 cls['label_type'])
-                source, model = 'assisted', json.dumps(ctx.manager.provenance())
+                mask, prompts, provenance = assisted_from_session(body.from_session, it, user)
+                geom = geometry.mask_to_geometry(mask, cls['label_type'])
+                source, model, prompts = 'assisted', json.dumps(provenance), json.dumps(prompts)
             else:
                 geom = geometry.validate(body.geometry or {'type': 'tag'}, cls['label_type'],
                                          it['width'], it['height'])
@@ -729,8 +792,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         ts = now()
         cur = conn.execute(
             'INSERT INTO annotations (item_id, class_id, labeller_id, geometry, source, model, '
-            'created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            (item_id, cls['id'], user['id'], json.dumps(geom), source, model, ts, ts))
+            'prompts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (item_id, cls['id'], user['id'], json.dumps(geom), source, model, prompts, ts, ts))
         audit.record(conn, 'annotation.create', user=user, target=f'annotation:{cur.lastrowid}',
                      detail={'item_id': item_id, 'class_id': cls['id'], 'source': source})
         if it['status'] == 'todo':
@@ -813,6 +876,82 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             raise
         return FileResponse(tmp, media_type='application/zip', filename=f'{stem}.zip',
                             background=BackgroundTask(os.unlink, tmp))
+
+    # ── project models ────────────────────────────────────────────────────
+
+    def base_models() -> list[dict]:
+        """SAM 2 checkpoints a project model can start from."""
+        return [{'model_type': t, 'checkpoint': c} for c in ctx.manager.list_checkpoints()
+                if (t := guess_model_type(c)) and t.startswith('SAM2')]
+
+    def get_project_model(conn, model_id: int) -> sqlite3.Row:
+        m = conn.execute('SELECT * FROM project_models WHERE id = ?', (model_id,)).fetchone()
+        if m is None:
+            raise HTTPException(404, 'Model not found')
+        return m
+
+    @router.get('/projects/{project_id}/models')
+    def list_project_models(project_id: int, user=Depends(admin_user),
+                            conn=Depends(get_db, scope='function')):
+        """The project's models (newest first), what it has to train on, and
+        the base models available."""
+        p = get_project(conn, project_id, user)
+        rows = conn.execute('SELECT * FROM project_models WHERE project_id = ? ORDER BY id DESC',
+                            (project_id,))
+        return {'models': [training.model_out(r) for r in rows],
+                'assist_model_id': p['assist_model_id'],
+                'data': training.data_summary(conn, project_id),
+                'base_models': base_models(), 'training_id': ctx.training.running_id}
+
+    @router.post('/projects/{project_id}/models', status_code=202)
+    def train_project_model(project_id: int, body: TrainIn, user=Depends(admin_user),
+                            conn=Depends(get_db, scope='function')):
+        """Start training a project model in the background."""
+        get_project(conn, project_id, user)
+        bases = base_models()
+        if not bases:
+            raise HTTPException(400, 'No SAM 2 checkpoint in the weights folder')
+        base = next((b for b in bases if b['checkpoint'] == body.checkpoint), None)
+        if body.checkpoint is not None and base is None:
+            raise HTTPException(400, f'{body.checkpoint!r} is not a SAM 2 checkpoint')
+        base = base or bases[0]
+        summary = training.data_summary(conn, project_id)
+        if summary['problems']:
+            raise HTTPException(400, ' '.join(summary['problems']))
+        try:
+            model_id = ctx.training.start(
+                project_id, user, base['model_type'], base['checkpoint'],
+                ctx.manager.checkpoint_sha256(base['checkpoint']),
+                body.steps or summary['default_steps'],
+                training.trainable_objects(conn, project_id))
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        return training.model_out(get_project_model(conn, model_id))
+
+    @router.post('/project-models/{model_id}/cancel')
+    def cancel_project_model(model_id: int, user=Depends(admin_user),
+                             conn=Depends(get_db, scope='function')):
+        m = get_project_model(conn, model_id)
+        if not ctx.training.cancel(model_id):
+            raise HTTPException(409, f"Model {model_id} is not training (it is {m['status']})")
+        audit.record(conn, 'model.train_cancel', user=user, target=f'project_model:{model_id}')
+        return training.model_out(m)
+
+    @router.delete('/project-models/{model_id}', status_code=204)
+    def delete_project_model(model_id: int, user=Depends(admin_user),
+                             conn=Depends(get_db, scope='function')):
+        m = get_project_model(conn, model_id)
+        if m['status'] in ('queued', 'running'):
+            raise HTTPException(409, 'Cancel the training first')
+        if conn.execute('SELECT 1 FROM projects WHERE assist_model_id = ?', (model_id,)).fetchone():
+            raise HTTPException(409, 'The project assists with this model; choose another first')
+        conn.execute('DELETE FROM project_models WHERE id = ?', (model_id,))
+        audit.record(conn, 'model.delete', user=user, target=f'project_model:{model_id}',
+                     detail={'project_id': m['project_id'], 'adapter_sha256': m['adapter_sha256']})
+        conn.commit()
+        shutil.rmtree(models_dir / f"project_{m['project_id']}" / f'model_{model_id}',
+                      ignore_errors=True)
+        return Response(status_code=204)
 
     # ── audit log ─────────────────────────────────────────────────────────
 

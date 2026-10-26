@@ -474,8 +474,11 @@ export default function Workspace({ itemId, me }: Props) {
                   <p className="meta" title="Weight of each model for the latest click">
                     Model weights: {describeWeights(session.ensemble_weights)}</p>
                 )}
-                <ModelPicker models={models} admin={me.role === 'admin'} busy={busy}
-                             onLoad={loadModel} />
+                {session?.model
+                  ? <p className="meta" title="This project assists with its own trained model">
+                      Model: {session.model}</p>
+                  : <ModelPicker models={models} admin={me.role === 'admin'} busy={busy}
+                                 onLoad={loadModel} />}
               </>
             )}
             {tool === 'box' && (

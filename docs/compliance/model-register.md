@@ -37,6 +37,23 @@ by the web server. If adapters are ever used to produce labels, register
 each one here with the base checkpoint, the data it was trained on and its
 benchmark result.
 
+**Project models** are the exception: SAM 2 adapters an admin trains in the
+web app (project page, **Models** tab) on that project's recorded clicks and
+saved masks. They are registered in the application itself, in the
+`project_models` table, which this register delegates to: base checkpoint
+and its SHA-256, adapter file and its SHA-256, training objects, the
+held-out images, and the held-out scores of the base model and the trained
+one (same simulated user and measures as below, on that project's own
+labels). A fifth of the project's labelled images are held out and never
+trained on. An admin chooses one finished model per project for assisted
+labelling, after comparing those scores; the server refuses to load an
+adapter whose file no longer matches its registered SHA-256, and every
+annotation it proposes records the adapter's id and SHA-256 next to the
+base checkpoint's. Training, cancelling, deleting and choosing a model are
+audit-logged (`model.train*`, `model.delete`, `project.update`).
+Held-out sets are small for young projects; prefer a model only when its
+gain holds up as the project grows.
+
 ## Performance
 
 Simulated-user benchmark (`tools/click_benchmark.py`): a robot clicks the

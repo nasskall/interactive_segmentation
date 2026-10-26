@@ -11,7 +11,10 @@ SimpleClick, SAM, SAM 2, or an ensemble of them) propose masks from a
 labeller's clicks or box. A human accepts, corrects or rejects each
 proposal; accepted labels become training data for downstream models. Online
 adaptation (desktop app and benchmark) fine-tunes small LoRA adapters on the
-user's own corrected masks. The AI never labels without a human decision.
+user's own corrected masks, and admins can train a project model (a SAM 2
+adapter) on a project's recorded clicks and saved masks in the web app; it is
+scored against the base model on held-out images and only used once an admin
+chooses it. The AI never labels without a human decision.
 
 ## A.2 Policies related to AI
 
@@ -55,7 +58,7 @@ user's own corrected masks. The AI never labels without a human decision.
 | A.6.1.3 | Processes for responsible AI system design and development | Partial | Changes through pull requests with tests; model changes evaluated on held-out benchmarks before use (`tools/click_benchmark.py`). |
 | A.6.2.2 | AI system requirements and specification | Partial | Requirements: human-in-the-loop, provenance per label, rollback of adaptation, held-out evaluation. Record them in the project's requirements. |
 | A.6.2.3 | Documentation of AI system design and development | Yes | Module docstrings (`isegm/inference/predictors/ensemble.py`, `isegm/adaptation/online_adapter.py`), README, [model-register.md](model-register.md). |
-| A.6.2.4 | AI system verification and validation | Yes | Simulated-user benchmarks on held-out data: COCO128-seg people and the ISIC 2018 lesion set (`tools/build_lesion_benchmark.py`), scoring mIoU and clicks to 85% / 90% IoU; results in the model register. Adaptation is checked to roll back exactly to the baseline. |
+| A.6.2.4 | AI system verification and validation | Yes | Simulated-user benchmarks on held-out data: COCO128-seg people and the ISIC 2018 lesion set (`tools/build_lesion_benchmark.py`), scoring mIoU and clicks to 85% / 90% IoU; results in the model register. Adaptation is checked to roll back exactly to the baseline. Every project model is scored with the same simulated user against its base model on held-out images of its project before it can be chosen. |
 | A.6.2.5 | AI system deployment | Partial | Only admins switch the production model; every switch is logged with checkpoint SHA-256 (`model.load`). Deploy only models listed in the register. |
 | A.6.2.6 | AI system operation and monitoring | Partial | Every assisted annotation records the model; watch how often assisted labels are corrected or deleted (audit log `annotation.update` / `annotation.delete` record the label's source; the annotation's `model` field says which model proposed it). Re-run the benchmark when the data domain changes. |
 | A.6.2.7 | AI system technical documentation | Yes | [model-register.md](model-register.md); code documentation; this pack. |
