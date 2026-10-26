@@ -576,15 +576,17 @@ def _promptless_scores(net, prompts, job, should_stop) -> dict:
                        job['device'], should_stop=should_stop)
 
 
-def encoder_weights_sha256(repo: str) -> Optional[str]:
-    """SHA-256 of a student's pretrained encoder weights in the local
-    Hugging Face cache (None if they are not there)."""
+def encoder_weights_sha256(ref: str) -> Optional[str]:
+    """SHA-256 of a student's pretrained encoder weights (``repo@revision``)
+    in the local Hugging Face cache; None if they are not there."""
+    repo, _, revision = ref.partition('@')
     try:
-        from huggingface_hub import try_to_load_from_cache
-        path = try_to_load_from_cache(repo, 'model.safetensors')
-    except ImportError:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(repo, 'model.safetensors', revision=revision or None,
+                               local_files_only=True)
+    except Exception:
         return None
-    return file_sha256(Path(path)) if isinstance(path, str) else None
+    return file_sha256(Path(path))
 
 
 FITS: dict[str, FitFn] = {'interactive': fit_sam2, 'automatic': fit_promptless,

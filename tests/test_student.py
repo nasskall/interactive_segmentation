@@ -44,6 +44,21 @@ def test_train_predict_and_reload(synthetic_pair, device, tmp_path):
     assert np.abs(st.predict(again, img, device, size) - probs).max() < 1e-5
 
 
+def test_encoder_weights_are_fingerprinted():
+    import hashlib
+
+    from huggingface_hub import hf_hub_download
+    from server.labelling.training import encoder_weights_sha256
+    st.build(1)                       # downloads the weights if not cached yet
+    ref = st.encoder_weights_repo()
+    repo, _, revision = ref.partition('@')
+    assert repo == 'smp-hub/resnet18.imagenet' and revision
+    path = hf_hub_download(repo, 'model.safetensors', revision=revision, local_files_only=True)
+    with open(path, 'rb') as f:
+        assert encoder_weights_sha256(ref) == hashlib.sha256(f.read()).hexdigest()
+    assert encoder_weights_sha256('smp-hub/no-such-repo@0') is None
+
+
 def test_training_can_be_cancelled(synthetic_pair, device):
     with pytest.raises(st.Cancelled):
         st.train(st.build(2, pretrained=False), _examples(synthetic_pair, 1), 10, device,

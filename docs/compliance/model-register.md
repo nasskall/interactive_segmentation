@@ -73,7 +73,10 @@ repository `smp-hub/resnet18.imagenet`, which states no licence of its own:
 its model card names it a copy of torchvision's `resnet18-5c106cde.pth`
 (torchvision is BSD-3-Clause; the weights were trained on ImageNet, whose
 terms limit use to non-commercial research, so check before commercial
-use). The register entry records that file's SHA-256. A student is taught by a
+use). The revision is pinned by `segmentation_models_pytorch` 0.5.0
+(`3f2325ff978283d47aa6a1d6878ca20565622683`); `model.safetensors` SHA-256
+`b1d1d36f298c29c07afa9d5be76d888b01d174824177026613bbd64a26612d19`. Each
+student's register entry records `repo@revision` and that SHA-256. A student is taught by a
 finished automatic SAM 2 model of its project (`teacher_id`): it learns the
 labels of the done training images and the teacher's maps on the project's
 other images; held-out images are used for neither, and student and teacher

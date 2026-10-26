@@ -42,8 +42,11 @@ class Example:
 
 
 def encoder_weights_repo(encoder: str = ENCODER) -> str:
-    """Hugging Face repository the pretrained encoder comes from."""
-    return f'smp-hub/{encoder}.imagenet'
+    """``repo@revision`` on the Hugging Face hub of the pretrained encoder
+    weights (``segmentation_models_pytorch`` pins the revision)."""
+    from segmentation_models_pytorch.encoders import encoders
+    settings = encoders[encoder]['pretrained_settings']['imagenet']
+    return f"{settings['repo_id']}@{settings['revision']}"
 
 
 def build(n_classes: int, encoder: str = ENCODER, pretrained: bool = True):
