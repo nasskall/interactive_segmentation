@@ -10,6 +10,7 @@ so a CPU-only machine still finishes in a sensible amount of time.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import threading
 from dataclasses import dataclass
@@ -81,15 +82,51 @@ def _rand_pixels(mask: np.ndarray, n: int) -> list:
     return [(int(ys[i]), int(xs[i])) for i in idx]
 
 
-def _build_ritm_points_nd(pos: list, neg: list, device) -> torch.Tensor:
-    """Format expected by ISModel.forward — see fine_tune._build_points_nd."""
+def _click_rounds(cfg, gt_np: np.ndarray, user_clicks: Optional[list],
+                  get_prev: Callable[[], Optional[np.ndarray]]):
+    """Yield ``(clicks, train)`` for each forward pass of one training step.
+
+    ``clicks`` is an ordered list of ``(y, x, is_positive)``.
+
+    With ``user_clicks`` (a recorded interaction, in the step's image
+    coordinates) the step replays it: pick a random prefix length k, run
+    prefixes 1..k-1 without gradients so the model sees the same previous
+    mask it saw live, then train on prefix k against the accepted mask.
+    This teaches the model to reach the user's mask with fewer of the
+    user's own clicks.
+
+    Without them, ``cfg.n_clicks`` rounds of clicks are sampled from the
+    mask (and, after the first round, from the previous round's errors).
+    """
+    if user_clicks:
+        k = np.random.randint(1, len(user_clicks) + 1)
+        for j in range(1, k + 1):
+            yield user_clicks[:j], j == k
+        return
+    for _ in range(cfg.n_clicks):
+        pos, neg = _sample_click_pixels(gt_np, get_prev(), cfg.n_pos, cfg.n_neg)
+        if not pos:
+            continue
+        yield [(r, c, True) for r, c in pos] + [(r, c, False) for r, c in neg], True
+
+
+def _build_ritm_points_seq(clicks: list, device) -> torch.Tensor:
+    """Ordered ``(y, x, is_positive)`` clicks in ISModel's points format,
+    each tagged with its position in the sequence like
+    ``BasePredictor.get_points_nd``."""
+    pos = [(y, x, i) for i, (y, x, p) in enumerate(clicks) if p]
+    neg = [(y, x, i) for i, (y, x, p) in enumerate(clicks) if not p]
     N = max(len(pos), len(neg), 1)
     pts = np.full((1, 2 * N, 3), -1.0, dtype=np.float32)
-    for i, (r, c) in enumerate(pos):
-        pts[0, i] = [r, c, i]
-    for i, (r, c) in enumerate(neg):
-        pts[0, N + i] = [r, c, i]
+    for i, v in enumerate(pos):
+        pts[0, i] = v
+    for i, v in enumerate(neg):
+        pts[0, N + i] = v
     return torch.from_numpy(pts).to(device)
+
+
+def _grad_if(train: bool):
+    return contextlib.nullcontext() if train else torch.no_grad()
 
 
 def _soft_iou(logits: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
@@ -102,6 +139,14 @@ def _soft_iou(logits: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 # Per-family training step
 # ---------------------------------------------------------------------------
+
+def _scale_clicks(clicks: list, old_hw: tuple, new_hw: tuple) -> list:
+    """Map ``(y, x, is_positive)`` clicks to an image resized from
+    ``old_hw`` to ``new_hw``, keeping them on valid pixels."""
+    (oh, ow), (nh, nw) = old_hw, new_hw
+    return [(min(int(y * nh / oh), nh - 1), min(int(x * nw / ow), nw - 1), bool(p))
+            for y, x, p in clicks]
+
 
 def _fixed_input_size(model) -> Optional[tuple]:
     """Input size a model is locked to, or None if it accepts any size.
@@ -117,8 +162,10 @@ def _fixed_input_size(model) -> Optional[tuple]:
 
 def _step_ritm_family(
     model, image_np, gt_np, cfg: FewShotConfig, device,
+    user_clicks: Optional[list] = None,
 ) -> list[float]:
-    """Click-iterative training step for RITM / SimpleClick (ISModel API)."""
+    """Click-iterative training step for RITM / SimpleClick (ISModel API).
+    ``user_clicks``: see ``_click_rounds``."""
     # The dataset caps images at cfg.cpu_max_size/cuda_max_size, which yields
     # arbitrary sizes. Inference reaches SimpleClick through a fixed-size ZoomIn
     # crop, but this path feeds the model directly, so resize here or the ViT
@@ -126,6 +173,8 @@ def _step_ritm_family(
     fixed = _fixed_input_size(model)
     if fixed is not None and gt_np.shape[:2] != fixed:
         import cv2
+        if user_clicks:
+            user_clicks = _scale_clicks(user_clicks, gt_np.shape[:2], fixed)
         image_np = cv2.resize(image_np, (fixed[1], fixed[0]),
                               interpolation=cv2.INTER_LINEAR)
         gt_np = cv2.resize(gt_np.astype(np.uint8), (fixed[1], fixed[0]),
@@ -142,19 +191,17 @@ def _step_ritm_family(
     prev_pred_np: Optional[np.ndarray] = None
     losses: list[float] = []
 
-    for _ in range(cfg.n_clicks):
-        pos, neg = _sample_click_pixels(gt_np, prev_pred_np, cfg.n_pos, cfg.n_neg)
-        if not pos:
-            continue
-        points_nd = _build_ritm_points_nd(pos, neg, device)
+    for clicks, train in _click_rounds(cfg, gt_np, user_clicks, lambda: prev_pred_np):
+        points_nd = _build_ritm_points_seq(clicks, device)
         inp = torch.cat([image_t, prev_mask_t], dim=1) if with_prev_mask else image_t
 
-        out = model(inp, points_nd)
-        logits = out['instances']
-        loss = (cfg.bce_weight * F.binary_cross_entropy_with_logits(logits, gt_t)
-                + cfg.iou_weight * _soft_iou(logits, gt_t))
-        loss.backward()
-        losses.append(float(loss.detach()))
+        with _grad_if(train):
+            logits = model(inp, points_nd)['instances']
+        if train:
+            loss = (cfg.bce_weight * F.binary_cross_entropy_with_logits(logits, gt_t)
+                    + cfg.iou_weight * _soft_iou(logits, gt_t))
+            loss.backward()
+            losses.append(float(loss.detach()))
 
         with torch.no_grad():
             prob = torch.sigmoid(logits)
@@ -165,12 +212,15 @@ def _step_ritm_family(
 
 def _step_sam(
     sam_predictor, image_np, gt_np, cfg: FewShotConfig, device,
+    user_clicks: Optional[list] = None,
 ) -> list[float]:
     """Forward through SAM's prompt-encoder + mask-decoder with grads on.
 
     Accepts either a raw ``segment_anything.SamPredictor`` or our wrapper
     ``SAMInteractivePredictor`` (which holds the real predictor under
-    ``.sam_predictor``).
+    ``.sam_predictor``). ``user_clicks``: see ``_click_rounds``; when
+    replaying them, prompts match ``SAMInteractivePredictor`` (previous
+    low-res mask as mask input, best of three candidates after one click).
     """
     if hasattr(sam_predictor, 'sam_predictor'):
         sam_predictor = sam_predictor.sam_predictor
@@ -187,49 +237,56 @@ def _step_sam(
 
     losses: list[float] = []
     prev_pred_np: Optional[np.ndarray] = None
+    prev_logit: Optional[torch.Tensor] = None
+    replay = bool(user_clicks)
 
-    for _ in range(cfg.n_clicks):
-        pos, neg = _sample_click_pixels(gt_np, prev_pred_np, cfg.n_pos, cfg.n_neg)
-        if not pos:
-            continue
+    for clicks, train in _click_rounds(cfg, gt_np, user_clicks, lambda: prev_pred_np):
         # SAM uses (x, y).
-        coords_xy = np.array([[c, r] for r, c in pos] + [[c, r] for r, c in neg],
-                             dtype=np.float32)
-        labels = np.array([1] * len(pos) + [0] * len(neg), dtype=np.int32)
+        coords_xy = np.array([[x, y] for y, x, _ in clicks], dtype=np.float32)
+        labels = np.array([int(p) for _, _, p in clicks], dtype=np.int32)
         coords_t = sam_predictor.transform.apply_coords(coords_xy, (H, W))
         coords_t = torch.as_tensor(coords_t, dtype=torch.float, device=device)[None, ...]
         labels_t = torch.as_tensor(labels, dtype=torch.int, device=device)[None, ...]
+        multimask = replay and len(clicks) == 1
 
-        sparse, dense = sam.prompt_encoder(
-            points=(coords_t, labels_t), boxes=None, masks=None,
-        )
-        low_res, _ = sam.mask_decoder(
-            image_embeddings=image_embeddings,
-            image_pe=sam.prompt_encoder.get_dense_pe(),
-            sparse_prompt_embeddings=sparse,
-            dense_prompt_embeddings=dense,
-            multimask_output=False,
-        )
-        masks = sam.postprocess_masks(low_res, sam_predictor.input_size, sam_predictor.original_size)
-
-        loss = (cfg.bce_weight * F.binary_cross_entropy_with_logits(masks, gt_t)
-                + cfg.iou_weight * _soft_iou(masks, gt_t))
-        loss.backward()
-        losses.append(float(loss.detach()))
+        with _grad_if(train):
+            sparse, dense = sam.prompt_encoder(
+                points=(coords_t, labels_t), boxes=None,
+                masks=prev_logit if replay else None,
+            )
+            low_res, scores = sam.mask_decoder(
+                image_embeddings=image_embeddings,
+                image_pe=sam.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse,
+                dense_prompt_embeddings=dense,
+                multimask_output=multimask,
+            )
+            if multimask:
+                best = int(scores[0].argmax())
+                low_res = low_res[:, best:best + 1]
+            masks = sam.postprocess_masks(low_res, sam_predictor.input_size,
+                                          sam_predictor.original_size)
+        if train:
+            loss = (cfg.bce_weight * F.binary_cross_entropy_with_logits(masks, gt_t)
+                    + cfg.iou_weight * _soft_iou(masks, gt_t))
+            loss.backward()
+            losses.append(float(loss.detach()))
 
         with torch.no_grad():
             prev_pred_np = torch.sigmoid(masks).squeeze().cpu().numpy()
+            prev_logit = low_res.detach()
     return losses
 
 
 def _step_sam2(
     sam2_predictor, image_np, gt_np, cfg: FewShotConfig, device,
+    user_clicks: Optional[list] = None,
 ) -> list[float]:
     """SAM2 variant — uses sam_prompt_encoder / sam_mask_decoder names.
 
     Accepts either a raw ``SAM2ImagePredictor`` or our wrapper
     ``SAM2InteractivePredictor`` (which holds the real predictor under
-    ``.sam2_predictor``).
+    ``.sam2_predictor``). ``user_clicks``: as in ``_step_sam``.
     """
     if hasattr(sam2_predictor, 'sam2_predictor'):
         sam2_predictor = sam2_predictor.sam2_predictor
@@ -248,41 +305,46 @@ def _step_sam2(
 
     losses: list[float] = []
     prev_pred_np: Optional[np.ndarray] = None
+    prev_logit: Optional[torch.Tensor] = None
+    replay = bool(user_clicks)
 
-    for _ in range(cfg.n_clicks):
-        pos, neg = _sample_click_pixels(gt_np, prev_pred_np, cfg.n_pos, cfg.n_neg)
-        if not pos:
-            continue
-        coords_xy = np.array([[c, r] for r, c in pos] + [[c, r] for r, c in neg],
-                             dtype=np.float32)
-        labels = np.array([1] * len(pos) + [0] * len(neg), dtype=np.int32)
+    for clicks, train in _click_rounds(cfg, gt_np, user_clicks, lambda: prev_pred_np):
+        coords_xy = np.array([[x, y] for y, x, _ in clicks], dtype=np.float32)
+        labels = np.array([int(p) for _, _, p in clicks], dtype=np.int32)
         coords_t = sam2_predictor._transforms.transform_coords(
             torch.as_tensor(coords_xy, device=device), normalize=True, orig_hw=(H, W)
         )
         coords_t = coords_t[None, ...]
         labels_t = torch.as_tensor(labels, dtype=torch.int, device=device)[None, ...]
+        multimask = replay and len(clicks) == 1
 
-        sparse, dense = sam2.sam_prompt_encoder(
-            points=(coords_t, labels_t), boxes=None, masks=None,
-        )
-        low_res, _, _, _ = sam2.sam_mask_decoder(
-            image_embeddings=image_embed,
-            image_pe=sam2.sam_prompt_encoder.get_dense_pe(),
-            sparse_prompt_embeddings=sparse,
-            dense_prompt_embeddings=dense,
-            multimask_output=False,
-            repeat_image=False,
-            high_res_features=high_res_feats,
-        )
-        masks = F.interpolate(low_res, size=(H, W), mode='bilinear', align_corners=False)
-
-        loss = (cfg.bce_weight * F.binary_cross_entropy_with_logits(masks, gt_t)
-                + cfg.iou_weight * _soft_iou(masks, gt_t))
-        loss.backward()
-        losses.append(float(loss.detach()))
+        with _grad_if(train):
+            sparse, dense = sam2.sam_prompt_encoder(
+                points=(coords_t, labels_t), boxes=None,
+                masks=prev_logit if replay else None,
+            )
+            low_res, scores, _, _ = sam2.sam_mask_decoder(
+                image_embeddings=image_embed,
+                image_pe=sam2.sam_prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse,
+                dense_prompt_embeddings=dense,
+                multimask_output=multimask,
+                repeat_image=False,
+                high_res_features=high_res_feats,
+            )
+            if multimask:
+                best = int(scores[0].argmax())
+                low_res = low_res[:, best:best + 1]
+            masks = F.interpolate(low_res, size=(H, W), mode='bilinear', align_corners=False)
+        if train:
+            loss = (cfg.bce_weight * F.binary_cross_entropy_with_logits(masks, gt_t)
+                    + cfg.iou_weight * _soft_iou(masks, gt_t))
+            loss.backward()
+            losses.append(float(loss.detach()))
 
         with torch.no_grad():
             prev_pred_np = torch.sigmoid(masks).squeeze().cpu().numpy()
+            prev_logit = low_res.detach()
     return losses
 
 

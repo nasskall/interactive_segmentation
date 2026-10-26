@@ -1,211 +1,83 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type ModelInfo, type SessionState } from './api';
-import SegCanvas from './SegCanvas';
+import { useEffect, useState } from 'react';
+import { api, hasToken, setToken, setUnauthorizedHandler, type User } from './api';
+import { href, useRoute } from './lib';
+import { AuditPage, UsersPage } from './Admin';
+import { Login, ProjectPage, Projects, Setup } from './Pages';
+import QuickSegment from './QuickSegment';
+import Workspace from './Workspace';
+
+type Auth = { state: 'loading' } | { state: 'setup' } | { state: 'signed-out' }
+  | { state: 'signed-in'; user: User };
 
 export default function App() {
-  const [models, setModels] = useState<ModelInfo | null>(null);
-  const [modelType, setModelType] = useState('RITM');
-  const [checkpoint, setCheckpoint] = useState('');
-  const [session, setSession] = useState<SessionState | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState('Load an image to start.');
+  const route = useRoute();
+  const [auth, setAuth] = useState<Auth>({ state: 'loading' });
   const [error, setError] = useState<string | null>(null);
-  const [alpha, setAlpha] = useState(0.5);
-  const [clickRadius, setClickRadius] = useState(5);
-  const [thresh, setThresh] = useState(0.5);
-  const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    api.getModels()
-      .then((m) => {
-        setModels(m);
-        setModelType(m.current.model_type);
-        setCheckpoint(m.current.checkpoint ?? m.checkpoints[0] ?? '');
-      })
-      .catch((e) => setError(`Backend unreachable: ${e.message}`));
+    setUnauthorizedHandler(() => {
+      setToken(null);
+      setAuth({ state: 'signed-out' });
+    });
+    (async () => {
+      const { needs_setup } = await api.authStatus();
+      if (needs_setup) return setAuth({ state: 'setup' });
+      if (!hasToken()) return setAuth({ state: 'signed-out' });
+      try {
+        setAuth({ state: 'signed-in', user: await api.me() });
+      } catch {
+        setAuth({ state: 'signed-out' });
+      }
+    })().catch((e) => setError(`Backend unreachable: ${e.message}`));
   }, []);
 
-  // Runs one backend call at a time; the canvas ignores clicks while busy.
-  const run = useCallback(async (label: string, fn: () => Promise<SessionState | void>) => {
-    setBusy(true);
-    setError(null);
-    setStatus(`${label}…`);
-    const t0 = performance.now();
-    try {
-      const next = await fn();
-      if (next) setSession(next);
-      setStatus(`${label} done in ${Math.round(performance.now() - t0)} ms`);
-    } catch (e) {
-      setError((e as Error).message);
-      setStatus(`${label} failed`);
-    } finally {
-      setBusy(false);
-    }
-  }, []);
-
-  const sid = session?.session_id;
-
-  useEffect(() => { if (session) setThresh(session.prob_thresh); }, [session]);
-
-  // Sent once the slider is released rather than on every drag step.
-  const commitThresh = () => {
-    if (sid && session && thresh !== session.prob_thresh)
-      run('Threshold', () => api.updateSettings(sid, { prob_thresh: thresh }));
+  const signedIn = (user: User) => setAuth({ state: 'signed-in', user });
+  const signOut = async () => {
+    await api.logout().catch(() => {});
+    setToken(null);
+    setAuth({ state: 'signed-out' });
   };
 
-  const onFile = (file: File | undefined) => {
-    if (!file) return;
-    const old = sid;
-    run(`Uploading ${file.name}`, async () => {
-      const s = await api.createSession(file);
-      if (old) api.deleteSession(old).catch(() => {});
-      return s;
-    });
-  };
-
-  const onLoadModel = () =>
-    run(`Loading ${modelType}`, async () => {
-      const m = await api.loadModel(modelType, checkpoint);
-      setModels(m);
-      // Loading a model drops in-progress clicks on the server; resync.
-      if (sid) return api.getSession(sid);
-    });
-
-  const undo = useCallback(() => sid && run('Undo', () => api.undo(sid)), [sid, run]);
-  const finish = useCallback(() => sid && run('Finish object', () => api.finish(sid)), [sid, run]);
-  const reset = useCallback(() => sid && run('Reset object', () => api.reset(sid)), [sid, run]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (busy || !sid || (e.target as HTMLElement).tagName === 'INPUT' ||
-          (e.target as HTMLElement).tagName === 'SELECT') return;
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
-      else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); finish(); }
-      else if (e.key === 'Escape') reset();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [busy, sid, undo, finish, reset]);
-
-  const isSam = modelType.startsWith('SAM');
+  const user = auth.state === 'signed-in' ? auth.user : null;
+  let body;
+  if (error) body = <div className="page"><p className="error-text">{error}</p></div>;
+  else if (auth.state === 'loading') body = <div className="page muted">Loading…</div>;
+  else if (auth.state === 'setup') body = <div className="page"><Setup onSignedIn={signedIn} /></div>;
+  else if (!user) body = <div className="page"><Login onSignedIn={signedIn} /></div>;
+  else if (route.page === 'quick') body = <QuickSegment me={user} />;
+  else if (route.page === 'project') {
+    body = <ProjectPage key={route.id} projectId={route.id} tab={route.tab} me={user} />;
+  } else if (route.page === 'users' && user.role === 'admin') body = <UsersPage me={user} />;
+  else if (route.page === 'audit' && user.role === 'admin') body = <AuditPage />;
+  else if (route.page === 'item') body = <Workspace key={route.id} itemId={route.id} me={user} />;
+  else body = <Projects me={user} />;
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <h1>Interactive Segmentation</h1>
-
-        <section>
-          <h2>Image</h2>
-          <input ref={fileInput} type="file" accept="image/*" hidden
-                 onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ''; }} />
-          <button onClick={() => fileInput.current?.click()} disabled={busy}>Load image…</button>
-          {session && (
-            <p className="meta">
-              {session.filename} · {session.original_width}×{session.original_height}
-              {session.width !== session.original_width && ` (shown at ${session.width}×${session.height})`}
-            </p>
+    <div className="shell">
+      <header className="topbar">
+        <a className="brand" href={href.projects()}>Interactive Labelling</a>
+        <nav>
+          <a className={!['quick', 'users', 'audit'].includes(route.page) ? 'active' : ''}
+             href={href.projects()}>Projects</a>
+          {user?.role === 'admin' && (
+            <a className={route.page === 'users' ? 'active' : ''} href={href.users()}>Users</a>
           )}
-        </section>
-
-        <section>
-          <h2>Model</h2>
-          <label>
-            Type
-            <select value={modelType} onChange={(e) => setModelType(e.target.value)} disabled={busy}>
-              {models?.model_types.map((t) => <option key={t}>{t}</option>)}
-            </select>
-          </label>
-          <label>
-            Checkpoint
-            <select value={checkpoint} onChange={(e) => setCheckpoint(e.target.value)} disabled={busy}>
-              {models?.checkpoints.map((c) => <option key={c}>{c}</option>)}
-            </select>
-          </label>
-          <button onClick={onLoadModel} disabled={busy || !checkpoint}>Load model</button>
-          {models && (
-            <p className="meta">
-              Active: {models.current.model_type} · {models.current.checkpoint} · {models.device}
-            </p>
+          {user?.role === 'admin' && (
+            <a className={route.page === 'audit' ? 'active' : ''} href={href.audit()}>Audit log</a>
           )}
-        </section>
-
-        <section>
-          <h2>Segmentation</h2>
-          <div className="row">
-            <button onClick={undo} disabled={busy || !session?.can_undo}>Undo</button>
-            <button onClick={reset} disabled={busy || !session?.has_incomplete_object}>Reset</button>
-          </div>
-          <button className="primary" onClick={finish}
-                  disabled={busy || !session?.has_incomplete_object}>Finish object</button>
-          <button onClick={() => sid && run('Auto-segment', () => api.autoSegment(sid))}
-                  disabled={busy || !sid}>Auto-segment</button>
-          <a className={`button${!sid || busy ? ' disabled' : ''}`}
-             href={sid ? api.maskUrl(sid) : undefined} download>Download mask</a>
-          {session && (
-            <p className="meta">
-              {session.object_count} finished · {session.clicks.length} click(s) on current object
-            </p>
+          {user && (
+            <a className={route.page === 'quick' ? 'active' : ''} href={href.quick()}>Quick segment</a>
           )}
-        </section>
-
-        <section>
-          <h2>Settings</h2>
-          <label>
-            Probability threshold: {thresh.toFixed(2)}
-            <input type="range" min={0.05} max={0.95} step={0.05} disabled={!sid}
-                   value={thresh}
-                   onChange={(e) => setThresh(Number(e.target.value))}
-                   onPointerUp={commitThresh} onKeyUp={commitThresh} />
-          </label>
-          <label className="check">
-            <input type="checkbox" disabled={busy || !sid || isSam}
-                   checked={session?.use_zoom_in ?? true}
-                   onChange={(e) => sid && run('Zoom-in',
-                     () => api.updateSettings(sid, { use_zoom_in: e.target.checked }))} />
-            Zoom-in (RITM / SimpleClick)
-          </label>
-          <label>
-            Overlay opacity: {alpha.toFixed(2)}
-            <input type="range" min={0} max={1} step={0.05} value={alpha}
-                   onChange={(e) => setAlpha(Number(e.target.value))} />
-          </label>
-          <label>
-            Click radius: {clickRadius}
-            <input type="range" min={2} max={12} step={1} value={clickRadius}
-                   onChange={(e) => setClickRadius(Number(e.target.value))} />
-          </label>
-        </section>
-
-        <section className="help">
-          Left click: add to object · Right click: remove<br />
-          Ctrl+Z undo · Space finish · Esc reset
-        </section>
-      </aside>
-
-      <main className="stage">
-        {session ? (
-          <SegCanvas
-            imageUrl={api.imageUrl(session.session_id)}
-            overlayUrl={session.overlay}
-            width={session.width}
-            height={session.height}
-            clicks={session.clicks}
-            alpha={alpha}
-            clickRadius={clickRadius}
-            busy={busy}
-            onClick={(x, y, positive) =>
-              run(positive ? 'Positive click' : 'Negative click',
-                () => api.addClick(session.session_id, { x, y, positive }))}
-          />
-        ) : (
-          <div className="placeholder" onClick={() => fileInput.current?.click()}
-               onDragOver={(e) => e.preventDefault()}
-               onDrop={(e) => { e.preventDefault(); onFile(e.dataTransfer.files[0]); }}>
-            Drop an image here or click to choose one
-          </div>
+        </nav>
+        <span className="grow" />
+        {user && (
+          <span className="user">
+            {user.display_name} <span className="muted small">({user.role})</span>
+            <button onClick={signOut}>Sign out</button>
+          </span>
         )}
-        <footer className={error ? 'status error' : 'status'}>{error ?? status}</footer>
-      </main>
+      </header>
+      <div className="content">{body}</div>
     </div>
   );
 }

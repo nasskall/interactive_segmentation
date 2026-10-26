@@ -24,4 +24,4 @@ from .lora import (
 from .replay_buffer import ReplayBuffer, BufferEntry
 from .presets import attach_adapter, build_config, DEFAULT_RANKS
 from .few_shot_trainer import FewShotTrainer, FewShotConfig
-from .online_adapter import OnlineAdapter, OnlineAdaptConfig
+from .online_adapter import EnsembleAdapter, OnlineAdapter, OnlineAdaptConfig
