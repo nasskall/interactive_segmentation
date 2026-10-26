@@ -147,6 +147,8 @@ export interface AnnotationModel {
 
 export type ModelStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 export type ModelKind = 'interactive' | 'automatic';
+// What can be trained: a student is an automatic model with arch 'unet'.
+export type TrainKind = ModelKind | 'student';
 
 export interface Scores {
   objects: number;
@@ -168,6 +170,8 @@ export interface ProjectModel {
   id: number;
   project_id: number;
   kind: ModelKind;
+  arch: 'sam2' | 'unet'; // unet: standalone student
+  teacher_id: number | null; // students: the automatic SAM 2 model that taught them
   classes: { id: number; name: string }[] | null; // automatic: its outputs
   status: ModelStatus;
   base_model_type: string;
@@ -178,7 +182,8 @@ export interface ProjectModel {
   train_objects: number;
   train_items: number;
   held_out_items: number[];
-  metrics: { base: Scores; trained: Scores } | { trained: AutoScores } | null;
+  metrics: { base: Scores; trained: Scores } | { trained: AutoScores; teacher?: AutoScores }
+    | null;
   adapter_file: string | null;
   adapter_sha256: string | null;
   error: string | null;
@@ -194,6 +199,17 @@ export interface ProjectModels {
     classes: { id: number; name: string }[];
     done_images: number;
     labels: number;
+    train_images: number;
+    held_out_images: number;
+    default_steps: number;
+    min_images: number;
+    max_steps: number;
+    problems: string[];
+  };
+  student_data: {
+    teacher_id: number | null;
+    done_images: number;
+    unlabelled_images: number;
     train_images: number;
     held_out_images: number;
     default_steps: number;
@@ -437,12 +453,17 @@ export const api = {
 
   // project models (admins)
   projectModels: (projectId: number) => request<ProjectModels>(`/projects/${projectId}/models`),
-  trainProjectModel: (projectId: number,
-                      body: { kind: ModelKind; checkpoint?: string; steps?: number }) =>
+  trainProjectModel: (projectId: number, body: { kind: TrainKind; checkpoint?: string;
+                                                  steps?: number; teacher_id?: number }) =>
     request<ProjectModel>(`/projects/${projectId}/models`, json('POST', body)),
   cancelProjectModel: (id: number) =>
     request<ProjectModel>(`/project-models/${id}/cancel`, json('POST')),
   deleteProjectModel: (id: number) => request<void>(`/project-models/${id}`, { method: 'DELETE' }),
+  downloadProjectModel: async (id: number) => {
+    const res = await raw(`/project-models/${id}/download`);
+    const name = /filename="?([^";]+)"?/.exec(res.headers.get('Content-Disposition') ?? '')?.[1];
+    return { blob: await res.blob(), filename: name ?? `model_${id}.zip` };
+  },
 
   // audit log (admins)
   listAudit: (opts: { action?: string; before_id?: number; limit?: number } = {}) => {

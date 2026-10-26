@@ -203,6 +203,11 @@ images, and *Mark done & next* jumps to the next unfinished one.
   marked done, scored by per-class IoU on held-out ones. Once chosen,
   *Auto-label* in the workspace proposes labels for an image; each becomes an
   annotation only when the labeller accepts it.
+- **Students:** from a finished automatic model, the tab also trains a small
+  standalone U-Net (ResNet-18 encoder) on the done images' labels plus the
+  automatic model's masks on every other image, scored next to it on the
+  held-out images. It auto-labels about ten times faster and, like every
+  finished model, can be downloaded with a model card.
 
 On first start with an empty `data/`, the server prints a one-time setup
 token. Create the first admin with it via `POST /api/auth/setup`; every other

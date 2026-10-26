@@ -109,6 +109,10 @@ CREATE TABLE IF NOT EXISTS project_models (
     id              INTEGER PRIMARY KEY,
     project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     kind            TEXT NOT NULL DEFAULT 'interactive' CHECK (kind IN {MODEL_KINDS}),
+    -- automatic models: 'sam2' (click-free SAM 2) or 'unet' (standalone student)
+    arch            TEXT NOT NULL DEFAULT 'sam2',
+    -- students: the automatic SAM 2 model that taught them
+    teacher_id      INTEGER REFERENCES project_models(id) ON DELETE SET NULL,
     status          TEXT NOT NULL CHECK (status IN {MODEL_STATUSES}),
     base_model_type TEXT NOT NULL,
     base_checkpoint TEXT NOT NULL,
@@ -164,6 +168,11 @@ class Database:
                          f"DEFAULT 'interactive' CHECK (kind IN {MODEL_KINDS})")
         if 'classes' not in cols:
             conn.execute('ALTER TABLE project_models ADD COLUMN classes TEXT')
+        if 'arch' not in cols:
+            conn.execute("ALTER TABLE project_models ADD COLUMN arch TEXT NOT NULL DEFAULT 'sam2'")
+        if 'teacher_id' not in cols:
+            conn.execute('ALTER TABLE project_models ADD COLUMN teacher_id INTEGER '
+                         'REFERENCES project_models(id) ON DELETE SET NULL')
 
     def connect(self) -> sqlite3.Connection:
         # FastAPI may run a request's dependency and endpoint on different

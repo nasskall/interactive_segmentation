@@ -23,7 +23,10 @@ held-out images, and choose it as the project's assist model
 project then run on it, whatever the shared model is. An automatic project
 model (``kind`` "automatic", no clicks) chosen as ``auto_model_id`` proposes
 labels for an image (``POST /items/{id}/auto-label``); each proposal becomes
-an annotation only when a labeller accepts it (``from_proposal``).
+an annotation only when a labeller accepts it (``from_proposal``). A student
+(``kind`` "student" when training: a small standalone network taught by an
+automatic SAM 2 model) proposes labels the same way, faster, and any finished
+model can be downloaded with a model card (``GET /project-models/{id}/download``).
 
 Security events and every change to accounts, projects, items and
 annotations go to the hash-chained audit log (``audit.py``), which admins
@@ -40,6 +43,7 @@ import shutil
 import sqlite3
 import tempfile
 import uuid
+import zipfile
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -114,8 +118,9 @@ class ProjectPatch(BaseModel):
 
 
 class TrainIn(BaseModel):
-    kind: Literal[('interactive', 'automatic')] = 'interactive'
+    kind: Literal[('interactive', 'automatic', 'student')] = 'interactive'
     checkpoint: Optional[str] = None        # SAM 2 base checkpoint; default: the first one
+    teacher_id: Optional[int] = None        # student: default, the project's automatic SAM 2 model
     steps: Optional[int] = Field(default=None, ge=10, le=training.MAX_STEPS)
 
 
@@ -746,7 +751,7 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         """What a project model's annotations record: base checkpoint and adapter."""
         return {'model_type': m['base_model_type'], 'checkpoint': m['base_checkpoint'],
                 'sha256': m['base_sha256'],
-                'adapter': {'project_model_id': m['id'], 'kind': m['kind'],
+                'adapter': {'project_model_id': m['id'], 'kind': m['kind'], 'arch': m['arch'],
                             'file': m['adapter_file'], 'sha256': m['adapter_sha256']}}
 
     def assisted_from_session(sid: str, item, user) -> tuple[np.ndarray, dict, dict]:
@@ -930,6 +935,7 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                 'assist_model_id': p['assist_model_id'], 'auto_model_id': p['auto_model_id'],
                 'data': training.data_summary(conn, project_id),
                 'auto_data': training.automatic_summary(conn, project_id),
+                'student_data': training.student_summary(conn, project_id),
                 'base_models': base_models(), 'training_id': ctx.training.running_id}
 
     @router.post('/projects/{project_id}/models', status_code=202)
@@ -944,6 +950,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         if body.checkpoint is not None and base is None:
             raise HTTPException(400, f'{body.checkpoint!r} is not a SAM 2 checkpoint')
         base = base or bases[0]
+        if body.kind == 'student':
+            return start_student(conn, project_id, body, user)
         if body.kind == 'automatic':
             summary = training.automatic_summary(conn, project_id)
             classes, records = training.automatic_data(conn, project_id)
@@ -960,6 +968,59 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
         return training.model_out(get_project_model(conn, model_id))
+
+    def start_student(conn, project_id: int, body: TrainIn, user) -> dict:
+        from isegm.adaptation import student
+        teacher_id = body.teacher_id or training.default_teacher(conn, project_id)
+        t = conn.execute('SELECT * FROM project_models WHERE id = ? AND project_id = ?',
+                         (teacher_id, project_id)).fetchone() if teacher_id else None
+        if t is None or (t['kind'], t['arch'], t['status']) != ('automatic', 'sam2', 'done'):
+            raise HTTPException(400, 'A student needs a finished automatic SAM 2 model of this '
+                                     'project to learn from')
+        classes, labelled, unlabelled = training.student_data(conn, project_id, teacher_id)
+        if len(labelled) < training.MIN_IMAGES:
+            raise HTTPException(400, f'Needs at least {training.MIN_IMAGES} images marked done '
+                                     f'(has {len(labelled)}).')
+        n_train = len(training.split_items(labelled)[0]) + len(unlabelled)
+        repo = student.encoder_weights_repo()
+        try:
+            model_id = ctx.training.start(
+                project_id, user, 'automatic', f'U-Net ({student.ENCODER})', repo,
+                training.encoder_weights_sha256(repo),
+                body.steps or training.default_student_steps(n_train), labelled, classes,
+                arch='unet', teacher_id=teacher_id, unlabelled=unlabelled)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        return training.model_out(get_project_model(conn, model_id))
+
+    @router.get('/project-models/{model_id}/download')
+    def download_project_model(model_id: int, user=Depends(admin_user),
+                               conn=Depends(get_db, scope='function')):
+        """Zip of a finished model: its weights file, a model card (what it
+        is, how it was trained and scored, hashes) and a short README."""
+        m = get_project_model(conn, model_id)
+        if m['status'] != 'done':
+            raise HTTPException(409, f"Model {model_id} is {m['status']}, not finished")
+        p = conn.execute('SELECT name, task_type FROM projects WHERE id = ?',
+                         (m['project_id'],)).fetchone()
+        path = models_dir / m['adapter_file']
+        if training.file_sha256(path) != m['adapter_sha256']:
+            raise HTTPException(409, 'The model file has changed since it was registered')
+        card = {**training.model_out(m), 'project': dict(p),
+                'intended_use': 'Proposing segmentation labels for a human to accept, correct or '
+                                'reject. Not for diagnosis or any decision about a patient.',
+                'weights_file': 'model.pt'}
+        fd, tmp = tempfile.mkstemp(suffix='.zip')
+        os.close(fd)
+        with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(path, 'model.pt')
+            zf.writestr('model_card.json', json.dumps(card, indent=1))
+            zf.writestr('README.txt', training.model_readme(m))
+        audit.record(conn, 'model.download', user=user, target=f'project_model:{model_id}',
+                     detail={'adapter_sha256': m['adapter_sha256']})
+        name = export.safe_name(f"{p['name']}_model_{model_id}")
+        return FileResponse(tmp, media_type='application/zip', filename=f'{name}.zip',
+                            background=BackgroundTask(os.unlink, tmp))
 
     @router.post('/project-models/{model_id}/cancel')
     def cancel_project_model(model_id: int, user=Depends(admin_user),
@@ -1003,16 +1064,21 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         if it['kind'] != 'single':
             raise HTTPException(400, 'Automatic labelling works on single images')
         m = get_project_model(conn, p['auto_model_id'])
+        from isegm.adaptation import promptless, student
         try:
-            net, prompts = ctx.manager.adapter_net(
-                m['base_model_type'], m['base_checkpoint'], models_dir / m['adapter_file'],
-                m['adapter_sha256'], kind='automatic')
+            if m['arch'] == 'unet':
+                net, size = ctx.manager.student_net(models_dir / m['adapter_file'],
+                                                    m['adapter_sha256'])
+            else:
+                net, prompts = ctx.manager.adapter_net(
+                    m['base_model_type'], m['base_checkpoint'], models_dir / m['adapter_file'],
+                    m['adapter_sha256'], kind='automatic')
         except (ValueError, OSError) as exc:
             raise HTTPException(409, f"Project model {m['id']} cannot be loaded: {exc}")
-        from isegm.adaptation import promptless
         image = ctx.images.load_rgb(item_id, json.loads(it['files'])['image'])
         with ctx.manager.lock:
-            probs = promptless.predict(net, prompts, image, ctx.manager.device)
+            probs = (student.predict(net, image, ctx.manager.device, size) if m['arch'] == 'unet'
+                     else promptless.predict(net, prompts, image, ctx.manager.device))
         classes = {c['id']: c for c in conn.execute(
             'SELECT * FROM classes WHERE project_id = ?', (p['id'],))}
         min_area = AUTO_MIN_AREA * it['width'] * it['height']

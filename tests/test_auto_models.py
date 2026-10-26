@@ -110,7 +110,8 @@ def test_auto_label_proposes_and_saves_only_what_is_accepted(admin, auto_project
     assert a['source'] == 'assisted' and a['prompts'] is None
     assert a['model']['mode'] == 'automatic'
     assert a['model']['adapter'] == {'project_model_id': m['id'], 'kind': 'automatic',
-                                     'file': m['adapter_file'], 'sha256': m['adapter_sha256']}
+                                     'arch': 'sam2', 'file': m['adapter_file'],
+                                     'sha256': m['adapter_sha256']}
     assert a['geometry'] == r['proposals'][1]['geometry']
     # Once only; and a mask proposal cannot become a polygon-class label.
     assert admin.post(url, json={'class_id': lesion_id,
@@ -172,3 +173,86 @@ def test_auto_label_needs_a_chosen_model(admin):
     p, items = _seed_objects(admin, n_items=1, per_item=1)
     r = admin.post(f"/api/items/{items[0]['id']}/auto-label")
     assert r.status_code == 400 and 'no automatic model' in r.json()['detail']
+
+
+# ── students ──────────────────────────────────────────────────────────────
+
+def test_student_needs_a_finished_automatic_teacher(admin):
+    p, items = _seed_objects(admin, n_items=10, per_item=1)
+    _done(admin, items)
+    info = admin.ok('get', f"/api/projects/{p['id']}/models")
+    assert info['student_data']['teacher_id'] is None and info['student_data']['problems']
+    r = admin.post(f"/api/projects/{p['id']}/models", json={'kind': 'student'})
+    assert r.status_code == 400 and 'automatic SAM 2' in r.json()['detail']
+    interactive = _train(admin, p)
+    r = admin.post(f"/api/projects/{p['id']}/models",
+                   json={'kind': 'student', 'teacher_id': interactive['id']})
+    assert r.status_code == 400
+
+
+def test_student_learns_labels_and_teacher_maps_never_held_out_images(admin):
+    p, items = _seed_objects(admin, n_items=10, per_item=1)
+    _done(admin, items)
+    unlabelled = _items(admin, p['id'], n=3)
+    teacher = _train(admin, p, kind='automatic')
+    seen = {}
+
+    def fit(job, report, should_stop):
+        seen.update(job)
+        return _stub_fit(job, report, should_stop)
+    info = admin.ok('get', f"/api/projects/{p['id']}/models")['student_data']
+    assert (info['teacher_id'], info['done_images'], info['unlabelled_images']) ==         (teacher['id'], 10, 3)
+    m = _train(admin, p, fit=fit, kind='student')
+    assert (m['kind'], m['arch'], m['teacher_id']) == ('automatic', 'unet', teacher['id'])
+    assert m['base_model_type'] == 'U-Net (resnet18)'
+    assert m['classes'] == teacher['classes']
+    assert {u['item_id'] for u in seen['unlabelled']} == {u['id'] for u in unlabelled}
+    assert not {u['id'] for u in unlabelled} & set(m['held_out_items'])
+    assert m['train_items'] == 8 + 3 and len(m['held_out_items']) == 2
+    assert seen['teacher']['id'] == teacher['id']
+    assert seen['steps'] == training.default_student_steps(11)
+
+
+def test_student_auto_labels_and_downloads(admin, monkeypatch):
+    import io
+    import json
+    import zipfile
+
+    from isegm.adaptation import student
+    p, items = _seed_objects(admin, n_items=10, per_item=1)
+    _done(admin, items)
+    _train(admin, p, kind='automatic')
+    m = _train(admin, p, kind='student')
+    admin.ok('patch', f"/api/projects/{p['id']}", json={'auto_model_id': m['id']})
+    monkeypatch.setattr(_ctx(admin).manager, 'student_net', lambda path, sha: ('net', 128))
+
+    def predict(net, image, device, size):
+        assert (net, size) == ('net', 128)
+        probs = np.zeros((1, *image.shape[:2]), np.float32)
+        probs[0, 20:60, 20:60] = 0.9
+        return probs
+    monkeypatch.setattr(student, 'predict', predict)
+    item = _items(admin, p['id'])[0]
+    r = admin.ok('post', f"/api/items/{item['id']}/auto-label")
+    a = admin.ok('post', f"/api/items/{item['id']}/annotations", 201, json={
+        'class_id': r['proposals'][0]['class_id'], 'from_proposal': {'set': r['set'], 'index': 0}})
+    assert a['model']['adapter']['arch'] == 'unet' and a['model']['mode'] == 'automatic'
+
+    res = admin.get(f"/api/project-models/{m['id']}/download")
+    assert res.status_code == 200, res.text
+    zf = zipfile.ZipFile(io.BytesIO(res.content))
+    assert sorted(zf.namelist()) == ['README.txt', 'model.pt', 'model_card.json']
+    path = _ctx(admin).training.models_dir / m['adapter_file']
+    assert zf.read('model.pt') == path.read_bytes()
+    card = json.loads(zf.read('model_card.json'))
+    assert (card['id'], card['arch']) == (m['id'], 'unet')
+    assert card['adapter_sha256'] == m['adapter_sha256']
+    assert 'Not for diagnosis' in card['intended_use']
+    assert 'U-Net' in zf.read('README.txt').decode()
+    actions = [e['action'] for e in admin.ok('get', '/api/audit', params={'action': 'model.'})]
+    assert actions[0] == 'model.download'
+
+    lab = _labeller(admin)
+    assert lab.get(f"/api/project-models/{m['id']}/download").status_code == 403
+    path.write_bytes(b'tampered')
+    assert admin.get(f"/api/project-models/{m['id']}/download").status_code == 409

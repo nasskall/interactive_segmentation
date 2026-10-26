@@ -3,8 +3,8 @@
 
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react';
 import { api, TASK_FORMATS, TASK_LABELS, type AuditEntry, type ExportFormat, type Item,
-         type LabelClass, type LabelType, type ModelKind, type ModelStatus, type Progress,
-         type Project, type ProjectModel, type ProjectModels, type TaskType,
+         type LabelClass, type LabelType, type ModelStatus, type Progress,
+         type Project, type ProjectModel, type ProjectModels, type TaskType, type TrainKind,
          type User } from './api';
 import { go, href, saveBlob } from './lib';
 
@@ -512,9 +512,11 @@ const STATUS_LABELS: Record<ModelStatus, string> = {
   queued: 'queued', running: 'training', done: 'ready', failed: 'failed', cancelled: 'cancelled',
 };
 
-const KIND_LABELS: Record<ModelKind, string> = {
-  interactive: 'Interactive', automatic: 'Automatic',
+const KIND_LABELS: Record<TrainKind, string> = {
+  interactive: 'Interactive', automatic: 'Automatic', student: 'Student',
 };
+
+const modelLabel = (m: ProjectModel) => (m.arch === 'unet' ? 'student' : m.kind);
 
 /** "5.62 → 3.17" coloured by whether the trained model is better. */
 function Change({ base, trained, lowerIsBetter, digits }: {
@@ -531,11 +533,15 @@ function Change({ base, trained, lowerIsBetter, digits }: {
 function ModelScores({ m }: { m: ProjectModel }) {
   if (!m.metrics) return <span className="muted">—</span>;
   if (!('base' in m.metrics)) {
-    const t = m.metrics.trained;
+    const { trained: t, teacher } = m.metrics;
     return (
       <div className="small">
         <div title="Intersection over union with the saved labels, all held-out images together">
           Mean IoU: <strong>{t.miou.toFixed(3)}</strong></div>
+        {teacher && (
+          <div title="The teacher scored on the same held-out images">
+            Teacher #{m.teacher_id}: <Change base={teacher.miou} trained={t.miou}
+                                             lowerIsBetter={false} digits={3} /></div>)}
         <div className="meta">{(m.classes ?? []).map((c, i) => `${c.name} ${t.iou[i].toFixed(2)}`)
           .join(' · ')}</div>
         <div className="meta">{t.images} held-out images</div>
@@ -571,7 +577,23 @@ function ModelStatusCell({ m }: { m: ProjectModel }) {
   );
 }
 
-function TrainingData({ info, kind }: { info: ProjectModels; kind: ModelKind }) {
+function TrainingData({ info, kind }: { info: ProjectModels; kind: TrainKind }) {
+  if (kind === 'student') {
+    const d = info.student_data;
+    return (
+      <>
+        <p className="meta">Trains a small standalone network (U-Net, ResNet-18 encoder) that
+          segments every class with no clicks and without SAM 2: about ten times faster, and
+          downloadable. It learns the labels of the images marked done and, on every other image
+          of the project, the masks of an automatic SAM 2 model (its teacher), so unlabelled
+          images help too. The held-out images are scored for both.</p>
+        {d.teacher_id !== null && (
+          <p>Teacher: automatic model #{d.teacher_id}. {d.done_images} done images,
+            {' '}{d.unlabelled_images} more for the teacher to label ({d.train_images} to train,
+            {' '}{d.held_out_images} held out).</p>)}
+      </>
+    );
+  }
   if (kind === 'automatic') {
     const d = info.auto_data;
     return (
@@ -608,7 +630,7 @@ export function ModelsPanel({ project, onChanged }: {
   project: Project; onChanged: (p: Project) => void;
 }) {
   const [info, setInfo] = useState<ProjectModels | null>(null);
-  const [kind, setKind] = useState<ModelKind>('interactive');
+  const [kind, setKind] = useState<TrainKind>('interactive');
   const [checkpoint, setCheckpoint] = useState('');
   const [steps, setSteps] = useState('');
   const { busy, error, setError, run } = useAsync();
@@ -624,7 +646,8 @@ export function ModelsPanel({ project, onChanged }: {
 
   if (!info) return <div className="card">{error ? <p className="error-text">{error}</p>
                                                 : <span className="muted">Loading…</span>}</div>;
-  const d = kind === 'automatic' ? info.auto_data : info.data;
+  const d = kind === 'automatic' ? info.auto_data : kind === 'student' ? info.student_data
+    : info.data;
   const assist = info.models.find((m) => m.id === info.assist_model_id);
   const auto = info.models.find((m) => m.id === info.auto_model_id);
   const otherTraining = info.training_id !== null && !info.models.some((m) => m.id === info.training_id);
@@ -649,7 +672,7 @@ export function ModelsPanel({ project, onChanged }: {
       <div className="card form">
         <h2 className="form-title">Train a model for this project</h2>
         <div className="segmented">
-          {(['interactive', 'automatic'] as const).map((k) => (
+          {(['interactive', 'automatic', 'student'] as const).map((k) => (
             <button key={k} className={kind === k ? 'active' : ''}
                     onClick={() => { setKind(k); setSteps(''); }}>{KIND_LABELS[k]}</button>
           ))}
@@ -705,7 +728,8 @@ export function ModelsPanel({ project, onChanged }: {
               <tbody>
                 {info.models.map((m) => (
                   <tr key={m.id} className="static">
-                    <td>#{m.id} · {m.kind}<div className="meta">{m.base_model_type}</div>
+                    <td>#{m.id} · {modelLabel(m)}<div className="meta">{m.base_model_type}</div>
+                      {m.teacher_id !== null && <div className="meta">taught by #{m.teacher_id}</div>}
                       <div className="meta">{m.created_at.slice(0, 16).replace('T', ' ')}</div></td>
                     <td><ModelScores m={m} /></td>
                     <td className="small">{m.train_objects} {m.kind === 'automatic' ? 'labels' : 'objects'},
@@ -722,6 +746,12 @@ export function ModelsPanel({ project, onChanged }: {
                           {m.kind === 'automatic' ? 'Use for auto-labelling' : 'Use for labelling'}
                         </button>)}
                       {inUse(m) && <span className="badge status-done">in use</span>}
+                      {m.status === 'done' && (
+                        <button disabled={busy} title="Weights, model card and README as a zip"
+                                onClick={() => run(async () => {
+                                  const { blob, filename } = await api.downloadProjectModel(m.id);
+                                  saveBlob(blob, filename);
+                                })}>Download</button>)}
                       {m.status !== 'queued' && m.status !== 'running' && !inUse(m) && (
                         <ConfirmButton label="Delete" confirm="Delete this model?" disabled={busy}
                                        onConfirm={() => act(() => api.deleteProjectModel(m.id))} />)}

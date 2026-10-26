@@ -66,6 +66,24 @@ the annotation's provenance records the adapter and `"mode": "automatic"`.
 Its intended use is the same as above: never labels without a human
 decision.
 
+**Students** (automatic, `arch` "unet", `isegm/adaptation/student.py`) are
+small standalone networks: a U-Net (`segmentation_models_pytorch`, MIT)
+with a ResNet-18 encoder whose ImageNet weights come from the Hugging Face
+repository `smp-hub/resnet18.imagenet`, which states no licence of its own:
+its model card names it a copy of torchvision's `resnet18-5c106cde.pth`
+(torchvision is BSD-3-Clause; the weights were trained on ImageNet, whose
+terms limit use to non-commercial research, so check before commercial
+use). The register entry records that file's SHA-256. A student is taught by a
+finished automatic SAM 2 model of its project (`teacher_id`): it learns the
+labels of the done training images and the teacher's maps on the project's
+other images; held-out images are used for neither, and student and teacher
+are scored on them side by side. Students propose labels like the SAM 2
+kind. Any finished project model can be **downloaded** by an admin (weights,
+model card with classes, training data, held-out scores and hashes,
+README); downloads are audit-logged (`model.download`). A downloaded model
+is a copy outside the platform's controls: its model card states its
+intended use, and whoever uses it is responsible for its validation there.
+
 ## Performance
 
 Simulated-user benchmark (`tools/click_benchmark.py`): a robot clicks the

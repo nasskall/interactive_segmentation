@@ -374,6 +374,28 @@ class ModelManager:
                 self._adapter_nets.popitem(last=False)
         return loaded
 
+    def student_net(self, path: Path, sha256: str):
+        """(model, input size) of a standalone student file that must still
+        have ``sha256``; cached like the adapters."""
+        with self.lock:
+            if sha256 in self._adapter_nets:
+                self._adapter_nets.move_to_end(sha256)
+                return self._adapter_nets[sha256]
+        import torch
+
+        from isegm.adaptation import student
+        data = Path(path).read_bytes()
+        if hashlib.sha256(data).hexdigest() != sha256:
+            raise ValueError(f'{Path(path).name} has changed since it was registered '
+                             '(SHA-256 mismatch); not loading it')
+        loaded = student.load(torch.load(io.BytesIO(data), map_location='cpu', weights_only=True))
+        loaded[0].to(self.device)
+        with self.lock:
+            self._adapter_nets[sha256] = loaded
+            while len(self._adapter_nets) > self.max_adapter_nets:
+                self._adapter_nets.popitem(last=False)
+        return loaded
+
     def _switch(self, net, model_label: str, checkpoint: Optional[str]) -> None:
         self.net = net
         self.model_label = model_label

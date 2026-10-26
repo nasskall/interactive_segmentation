@@ -305,7 +305,8 @@ def test_project_model_assists_its_project_only(admin, ritm_checkpoint_path, dev
                  json={'class_id': admin.ok('get', f"/api/projects/{p['id']}/classes")[0]['id'],
                        'from_session': s['session_id']})
     assert a['model']['adapter'] == {'project_model_id': m['id'], 'kind': 'interactive',
-                                     'file': m['adapter_file'], 'sha256': m['adapter_sha256']}
+                                     'arch': 'sam2', 'file': m['adapter_file'],
+                                     'sha256': m['adapter_sha256']}
     assert a['model']['checkpoint'] == SAM2_CKPT
 
     # Other projects keep the shared model.
