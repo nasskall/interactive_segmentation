@@ -2,7 +2,6 @@ from typing import Callable, Optional
 
 import torch
 import numpy as np
-from tkinter import messagebox
 
 from isegm.inference import clicker
 from isegm.inference.predictors import get_predictor
@@ -73,6 +72,8 @@ class InteractiveController:
 
     def set_mask(self, mask):
         if self.image.shape[:2] != mask.shape[:2]:
+            # Desktop app only; imported here so the web server needs no Tk.
+            from tkinter import messagebox
             messagebox.showwarning("Warning", "A segmentation mask must have the same sizes as the current image!")
             return
 

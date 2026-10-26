@@ -2,7 +2,7 @@
 // exports, users.
 
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react';
-import { api, TASK_FORMATS, TASK_LABELS, type AuditEntry, type ExportFormat, type Item,
+import { api, MIN_PASSWORD, TASK_FORMATS, TASK_LABELS, type AuditEntry, type ExportFormat, type Item,
          type LabelClass, type LabelType, type ModelStatus, type Progress,
          type Project, type ProjectModel, type ProjectModels, type TaskType, type TrainKind,
          type User } from './api';
@@ -884,9 +884,9 @@ export function UsersPage({ me }: { me: User }) {
               <td><div className="actions">
                 {resetFor === u.id ? (
                   <span className="row">
-                    <input type="password" placeholder="New password (12+)" value={newPassword}
+                    <input type="password" placeholder={`New password (${MIN_PASSWORD}+)`} value={newPassword}
                            autoComplete="new-password" onChange={(e) => setNewPassword(e.target.value)} />
-                    <button disabled={busy || newPassword.length < 8}
+                    <button disabled={busy || newPassword.length < MIN_PASSWORD}
                             onClick={() => { update(u, { password: newPassword },
                                                     `Password changed for ${u.display_name}; they were signed out.`);
                                              setResetFor(null); setNewPassword(''); }}>Set</button>
@@ -921,7 +921,7 @@ export function UsersPage({ me }: { me: User }) {
                                 autoComplete="off"
                                 onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
           <label>Password<input type="password" value={form.password} autoComplete="new-password"
-                                placeholder="at least 12 characters"
+                                placeholder={`at least ${MIN_PASSWORD} characters`}
                                 onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
           <label>Role<select value={form.role}
                              onChange={(e) => setForm({ ...form, role: e.target.value as User['role'] })}>
@@ -930,7 +930,7 @@ export function UsersPage({ me }: { me: User }) {
         <div className="row-end">
           <button className="primary"
                   disabled={busy || !/^[A-Za-z0-9_.-]{3,32}$/.test(form.username.trim())
-                            || !form.display_name.trim() || form.password.length < 8}>Add user</button>
+                            || !form.display_name.trim() || form.password.length < MIN_PASSWORD}>Add user</button>
         </div>
       </form>
     </div>

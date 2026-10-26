@@ -9,6 +9,9 @@ const apiUrl = process.env.ISEG_API_URL ?? 'http://127.0.0.1:8000';
 
 export default defineConfig({
   plugins: [react()],
+  // Relative asset URLs, so the build also works under a path such as
+  // https://<server>/iseg/ behind a reverse proxy.
+  base: './',
   server: {
     proxy: {
       '/api': apiUrl,

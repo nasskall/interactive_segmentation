@@ -68,3 +68,6 @@ interactive_demo/logo.png
 node_modules/
 frontend/dist/
 *.tsbuildinfo
+
+# Server bundle made by deploy/pack.ps1
+/iseg-bundle.tar.gz

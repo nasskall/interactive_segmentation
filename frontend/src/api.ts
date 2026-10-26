@@ -288,6 +288,8 @@ export const TASK_LABELS: Record<TaskType, string> = {
 // ── transport ──────────────────────────────────────────────────────────────
 
 const TOKEN_KEY = 'iseg.token';
+// Mirrors MIN_PASSWORD_LENGTH in server/labelling/auth.py.
+export const MIN_PASSWORD = 12;
 
 function readToken(): string | null {
   try {
@@ -313,10 +315,16 @@ export function setToken(t: string | null) {
 export const hasToken = () => token !== null;
 export const setUnauthorizedHandler = (fn: () => void) => { onUnauthorized = fn; };
 
+// Where the app is served: '' at the site root, '/iseg' behind a reverse
+// proxy at /iseg/. API paths (and the image URLs the server returns) start
+// with /api and are resolved under it.
+const BASE = new URL('.', window.location.href).pathname.replace(/\/$/, '');
+
 async function raw(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  const res = await fetch(path.startsWith('/api') ? path : `/api${path}`, { ...init, headers });
+  const res = await fetch(BASE + (path.startsWith('/api') ? path : `/api${path}`),
+                          { ...init, headers });
   if (!res.ok) {
     if (res.status === 401 && token) onUnauthorized();
     let detail = res.statusText;
