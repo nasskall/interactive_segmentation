@@ -14,8 +14,10 @@ Two stages, both resumable:
 
   train    -- Train SAM 2 (LoRA on prompt encoder + mask decoder, frozen
               encoder with cached features) to reproduce those maps from
-              the same clicks (``--target teacher``), or the expert masks
-              (``--target gt``, the control). Every --eval-every steps the
+              the same clicks (``--target teacher``), the masks a labeller
+              would have accepted from the teacher, with no expert check
+              (``--target accepted``), or the expert masks (``--target gt``,
+              the control). Every --eval-every steps the
               student is scored on the lesion benchmark's eval split and its
               adapter saved; the best checkpoint by NoC@90 is reported.
 
@@ -180,11 +182,16 @@ def load_records(targets: Path, names: list[str]) -> list[dict]:
 
 
 def record_targets(rec: dict, kind: str, pool_dir: Path) -> np.ndarray:
-    """uint8 (0..255) target after each click: the teacher's maps, or the
-    expert mask (one copy, broadcast over the clicks)."""
+    """uint8 (0..255) target after each click: the teacher's maps; the
+    accepted mask (the teacher's last map thresholded, i.e. what a labeller
+    using the teacher would have saved, with no expert check); or the expert
+    mask. The last two are one mask broadcast over the clicks."""
     maps = np.load(rec['file'])['maps']
     if kind == 'teacher':
         return maps
+    if kind == 'accepted':
+        m = np.where(maps[-1] > 127, 255, 0).astype(np.uint8)
+        return np.broadcast_to(m[None], maps.shape)
     hh, ww = maps.shape[1:]
     _, gt = load_item(pool_dir, rec['name'])
     m = cv2.resize(gt.astype(np.uint8) * 255, (ww, hh), interpolation=cv2.INTER_NEAREST)
@@ -341,7 +348,7 @@ def main():
 
     s = sub.add_parser('train', help='train the SAM 2 student')
     s.add_argument('--targets', type=Path, required=True)
-    s.add_argument('--target', choices=['teacher', 'gt'], default='teacher')
+    s.add_argument('--target', choices=['teacher', 'accepted', 'gt'], default='teacher')
     s.add_argument('--steps', type=int, default=2000)
     s.add_argument('--batch', type=int, default=4)
     s.add_argument('--lr', type=float, default=2e-4)

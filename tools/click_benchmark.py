@@ -194,6 +194,8 @@ def main():
     ap.add_argument('--sweep-steps', default='10,30,90',
                     help='total training steps at which each --sweep-lr is scored')
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--eval-split', default='eval',
+                    help="manifest split to score on (e.g. 'reserve' for a final, untouched check)")
     ap.add_argument('--adapter', type=Path, default=None,
                     help='LoRA adapter to load first (e.g. a distilled student from tools/distill.py)')
     args = ap.parse_args()
@@ -205,8 +207,8 @@ def main():
         # Fixed split; --n-train/--n-eval only cap it, --category is ignored.
         splits = load_manifest(args.data)
         train = splits['session'][:args.n_train]
-        evals = splits['eval'][:args.n_eval]
-        source = args.data.name
+        evals = splits[args.eval_split][:args.n_eval]
+        source = f'{args.data.name} {args.eval_split}'
     else:
         args.n_train = 8 if args.n_train is None else args.n_train
         args.n_eval = 12 if args.n_eval is None else args.n_eval
