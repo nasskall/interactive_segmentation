@@ -26,6 +26,9 @@ Run from repo root, e.g.:
     python tools/distill.py train --targets experiments/distill/sc_sam2 --target teacher
     python tools/distill.py train --targets experiments/distill/sc_sam2 --target gt
 
+A killed train run continues from its latest step checkpoint with the same
+arguments plus --resume.
+
 Load a saved student in the desktop app (Load adapter) or score it with
     python tools/click_benchmark.py --model sam2 --adapter <run>/best.pt --data datasets/lesion_bench
 """
@@ -51,8 +54,8 @@ import click_benchmark as cb                                     # noqa: E402
 from interactive_demo.controller import InteractiveController    # noqa: E402
 from isegm.adaptation import attach_adapter                      # noqa: E402
 from isegm.adaptation.distill import distill_step, sam2_features  # noqa: E402
-from isegm.adaptation.lora import (collect_lora_state, lora_parameters,  # noqa: E402
-                                   set_lora_trainable)
+from isegm.adaptation.lora import (collect_lora_state, load_lora_state,  # noqa: E402
+                                   lora_parameters, set_lora_trainable)
 from isegm.inference.clicker import Clicker                      # noqa: E402
 from isegm.inference.predictors import get_predictor             # noqa: E402
 from isegm.inference.predictors.ensemble import EnsembleNet      # noqa: E402
@@ -209,6 +212,38 @@ def evaluate_student(net, evals) -> dict:
     return r
 
 
+def resume(ckpt: Path, net, opt, sched, rng, recs, args, out: Path) -> tuple[int, dict]:
+    """Restore a train run from its latest step checkpoint. Returns (step, best).
+    Checkpoints from before --resume carry no optimizer or RNG state: AdamW
+    then restarts its moments, and the sampler replays its draws so the run
+    sees the same records it would have seen uninterrupted."""
+    payload = torch.load(ckpt, map_location='cpu', weights_only=False)
+    step = payload['distill']['step']
+    if payload['distill']['target'] != args.target:
+        raise SystemExit(f"{ckpt} was trained on --target {payload['distill']['target']}")
+    load_lora_state(net, payload['lora_state'])
+    state = payload.get('resume')
+    if state:
+        opt.load_state_dict(state['opt'])
+        rng.bit_generator.state = state['rng']
+    else:
+        print('  no optimizer state in checkpoint: AdamW restarts its moments', flush=True)
+        for _ in range(step * args.batch):
+            rec = recs[rng.integers(len(recs))]
+            rng.integers(1, len(rec['clicks']) + 1)
+    for _ in range(step):
+        sched.step()
+    best = {}
+    for line in (out / 'log.jsonl').read_text().splitlines():
+        r = json.loads(line)
+        if best.get('noc@90', 99) > r['noc@90'] or (
+                best.get('noc@90') == r['noc@90'] and r['iou@1'] > best['iou@1']):
+            best = r
+    print(f'resumed from {ckpt.name} (step {step}); best so far: step {best["step"]}  '
+          f'{cb.fmt(best)}', flush=True)
+    return step, best
+
+
 def cmd_train(args):
     out = args.out or args.targets / f'student_{args.target}'
     out.mkdir(parents=True, exist_ok=True)
@@ -247,7 +282,9 @@ def cmd_train(args):
         payload = {'model_type': 'sam2', 'rank': args.rank, 'wrapped_modules': wrapped,
                    'lora_state': collect_lora_state(net),
                    'distill': {'step': step, 'target': args.target,
-                               'teacher': str(args.targets), 'eval': r}}
+                               'teacher': str(args.targets), 'eval': r},
+                   # Training state for --resume; ignored when the adapter is loaded.
+                   'resume': {'opt': opt.state_dict(), 'rng': rng.bit_generator.state}}
         torch.save(payload, out / f'step{step:05d}.pt')
         log.write(json.dumps({'step': step, **r}) + '\n')
         log.flush()
@@ -258,9 +295,14 @@ def cmd_train(args):
             return {**r, 'step': step}
         return best
 
-    best = checkpoint(0, {})          # LoRA starts at identity: the base model
+    start = 0
+    ckpts = sorted(out.glob('step*.pt'))
+    if args.resume and ckpts:
+        start, best = resume(ckpts[-1], net, opt, sched, rng, recs, args, out)
+    else:
+        best = checkpoint(0, {})      # LoRA starts at identity: the base model
     t0, losses = time.time(), []
-    for step in range(1, args.steps + 1):
+    for step in range(start + 1, args.steps + 1):
         opt.zero_grad()
         for _ in range(args.batch):
             rec = recs[rng.integers(len(recs))]
@@ -275,7 +317,7 @@ def cmd_train(args):
         sched.step()
         if step % 50 == 0:
             print(f'  step {step:5d}  loss {np.mean(losses[-50 * args.batch:]):.4f}  '
-                  f'{(time.time() - t0) / step:.2f} s/step', flush=True)
+                  f'{(time.time() - t0) / (step - start):.2f} s/step', flush=True)
         if step % args.eval_every == 0 or step == args.steps:
             best = checkpoint(step, best)
     print(f'best: step {best["step"]}  {cb.fmt(best)}')
@@ -308,6 +350,8 @@ def main():
     s.add_argument('--seed', type=int, default=0)
     s.add_argument('--n-eval', type=int, default=None, help='score on the first N eval images')
     s.add_argument('--out', type=Path, default=None)
+    s.add_argument('--resume', action='store_true',
+                   help='continue from the latest step checkpoint in --out')
 
     args = ap.parse_args()
     np.random.seed(0)
