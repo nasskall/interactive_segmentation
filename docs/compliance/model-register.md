@@ -65,7 +65,7 @@ Held out from the lesion RITM (trained on the 2018 training split). Built by
 SAM 2.1 Tiny with LoRA (rank 8) on the prompt encoder and mask decoder,
 trained by `tools/distill.py train` for 2000 steps on the 1000 images of
 the ISIC 2018 Task 1 **test** split (disjoint from the validation images
-above). The robot's clicks are placed using the expert masks in both runs.
+above). The robot's clicks are placed using the expert masks in every run.
 "Distilled" learns from the adapted SimpleClick + SAM 2 teacher's soft
 masks; "control" learns from the expert masks directly. Same 40 evaluation
 images as above. Neither is loaded by the web server; register the adapter
@@ -76,12 +76,33 @@ file here before it is ever used for labelling.
 | SAM 2.1 Tiny (base) | 0.620 | 0.845 | 4.12 | 5.50 |
 | Teacher (adapted ensemble) | 0.748 | 0.913 | 3.00 | 4.12 |
 | Distilled student (best, step 1000) | 0.761 | 0.908 | 2.73 | 3.77 |
+| Accepted-mask student (step 2000) | 0.834 | 0.922 | 2.00 | 2.92 |
 | Control student (step 2000) | **0.861** | **0.935** | **1.80** | **2.52** |
 
 The distilled student beats its teacher but is capped by it (the teacher's
 masks average 0.90 IoU against the experts). Training on expert masks is
 clearly better when they exist; distillation is only worth using where no
-expert masks are available.
+expert masks are available. The accepted-mask student (2026-10-26) learns
+from the teacher's last mask thresholded, i.e. what a labeller would have
+saved from the teacher without an expert check; it recovers most of the
+control's gain without expert masks.
+
+**Reserve split (final check, 2026-10-26).** The checkpoints above were
+chosen on the eval split, so their eval scores are optimistic. The 40
+reserve images of the lesion benchmark were not used for any choice before
+this check.
+
+| Model | mIoU@1 | mIoU@5 | NoC@85 | NoC@90 |
+|---|---|---|---|---|
+| SAM 2.1 Tiny (base) | 0.596 | 0.837 | 4.20 | 5.62 |
+| Distilled student | 0.720 | 0.910 | 2.85 | 4.28 |
+| Accepted-mask student | **0.825** | 0.927 | 2.10 | 3.17 |
+| Control student | 0.823 | **0.935** | **1.70** | **2.80** |
+
+All three students still clearly beat base SAM 2 on unseen images; the
+ranking is unchanged. The distilled student loses the most against its eval
+score (about half a click at NoC@90). A 6000-step control student is still
+training and will be added here.
 
 ### People: COCO128-seg, 12 held-out images
 
