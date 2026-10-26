@@ -46,7 +46,11 @@ the first admin (the token changes on every restart until an admin exists).
   all of that user's sessions at once and keeps their labels attributable.
 - **Quarterly review:** check the Users page and the audit log (`Accounts`
   filter) for unexpected admins or accounts.
-- Keep at least two admins so one can recover the other's access.
+- Keep at least two admins so one can recover the other's access (Users
+  page, *Reset password*). If no admin can sign in, someone with access to
+  the server runs `python tools/reset_password.py <username>`: it prompts
+  for the new password, signs the account out everywhere and records the
+  reset in the audit log (`user.update` by "(command line)").
 
 ## 4. Monitoring
 
