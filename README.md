@@ -111,6 +111,7 @@ desktop-only; in the web app, admins train project models instead (see
 python -m pip install fastapi "uvicorn[standard]" python-multipart
 # Project students and their ONNX download (optional)
 python -m pip install segmentation-models-pytorch==0.5.0 onnx==1.23.2 onnxscript
+# A server needs only requirements-server.txt (no training-only packages)
 
 # Build the frontend once (needs Node.js 18+)
 cd frontend && npm install && npm run build && cd ..
@@ -212,6 +213,9 @@ images, and *Mark done & next* jumps to the next unfinished one.
   held-out images. It auto-labels about ten times faster and, like every
   finished model, can be downloaded with a model card; a student's download
   also holds `model.onnx`, which runs with ONNX Runtime alone (no PyTorch).
+- **On the lab server** (Ubuntu, Apache, Slurm): [deploy/ailab26.md](deploy/ailab26.md)
+  installs it at `https://<server>/iseg/` behind the existing Apache site,
+  as a systemd service, with every training as a Slurm job on a GPU.
 - **Where training runs:** each training is a separate worker process
   (`python -m server.labelling.train_worker`), one at a time; its output is
   kept in `data/models/logs/`. On a Slurm cluster, start the server with

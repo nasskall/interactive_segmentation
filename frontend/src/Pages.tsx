@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { AssignBar, ClassesEditor, ExportPanel, ModelsPanel, NewProject, ProjectSettings, TeamProgress,
          UploadPanel } from './Admin';
-import { api, setToken, TASK_LABELS, type Item, type ItemStatus, type Progress, type Project,
+import { api, MIN_PASSWORD, setToken, TASK_LABELS, type Item, type ItemStatus, type Progress, type Project,
          type User } from './api';
 import { go, href, type ProjectTab } from './lib';
 
@@ -75,11 +75,11 @@ export function Setup({ onSignedIn }: { onSignedIn: (u: User) => void }) {
                             autoComplete="username" placeholder="3–32 letters, digits, . _ -" /></label>
       <label>Display name<input value={form.display_name} onChange={set('display_name')} /></label>
       <label>Password<input type="password" value={form.password} onChange={set('password')}
-                            autoComplete="new-password" placeholder="at least 8 characters" /></label>
+                            autoComplete="new-password" placeholder={`at least ${MIN_PASSWORD} characters`} /></label>
       {error && <p className="error-text">{error}</p>}
       <button className="primary"
               disabled={busy || !form.setup_token || !form.username || !form.display_name
-                        || form.password.length < 8}>Create admin</button>
+                        || form.password.length < MIN_PASSWORD}>Create admin</button>
     </form>
   );
 }
