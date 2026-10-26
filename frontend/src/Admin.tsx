@@ -513,8 +513,7 @@ const STATUS_LABELS: Record<ModelStatus, string> = {
 };
 
 const KIND_LABELS: Record<ModelKind, string> = {
-  interactive: 'Interactive (learns from clicks)',
-  automatic: 'Automatic (no clicks)',
+  interactive: 'Interactive', automatic: 'Automatic',
 };
 
 /** "5.62 → 3.17" coloured by whether the trained model is better. */

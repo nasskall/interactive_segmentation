@@ -106,7 +106,8 @@ file here before it is ever used for labelling.
 | Teacher (adapted ensemble) | 0.748 | 0.913 | 3.00 | 4.12 |
 | Distilled student (best, step 1000) | 0.761 | 0.908 | 2.73 | 3.77 |
 | Accepted-mask student (step 2000) | 0.834 | 0.922 | 2.00 | 2.92 |
-| Control student (step 2000) | **0.861** | **0.935** | **1.80** | **2.52** |
+| Control student (step 2000) | 0.861 | 0.935 | 1.80 | 2.52 |
+| Control student, 6000-step run (best, step 5000) | **0.870** | **0.940** | **1.60** | **2.17** |
 
 The distilled student beats its teacher but is capped by it (the teacher's
 masks average 0.90 IoU against the experts). Training on expert masks is
@@ -125,13 +126,17 @@ this check.
 |---|---|---|---|---|
 | SAM 2.1 Tiny (base) | 0.596 | 0.837 | 4.20 | 5.62 |
 | Distilled student | 0.720 | 0.910 | 2.85 | 4.28 |
-| Accepted-mask student | **0.825** | 0.927 | 2.10 | 3.17 |
-| Control student | 0.823 | **0.935** | **1.70** | **2.80** |
+| Accepted-mask student | 0.825 | 0.927 | 2.10 | 3.17 |
+| Control student | 0.823 | 0.935 | **1.70** | 2.80 |
+| Control student, 6000-step run | **0.842** | **0.940** | 1.73 | **2.70** |
 
-All three students still clearly beat base SAM 2 on unseen images; the
+All the students still clearly beat base SAM 2 on unseen images; the
 ranking is unchanged. The distilled student loses the most against its eval
-score (about half a click at NoC@90). A 6000-step control student is still
-training and will be added here.
+score (about half a click at NoC@90). Training the control three times
+longer (6000 steps, checkpoint picked from six on the eval split) gains only
+0.1 click at NoC@90 and 0.02 first-click IoU on the reserve split, within
+noise for 40 images: most of its eval-split gain (2.52 to 2.17) came from
+picking the checkpoint on that split. About 2000 steps is enough.
 
 ### People: COCO128-seg, 12 held-out images
 

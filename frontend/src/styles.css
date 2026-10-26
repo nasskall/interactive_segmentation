@@ -353,6 +353,8 @@ table.users .actions { display: flex; gap: 6px; justify-content: flex-end; flex-
 @media (max-width: 720px) {
   .grid2, .pair-pick { grid-template-columns: 1fr; }
   table.users th:nth-child(2), table.users td:nth-child(2) { display: none; }
+  .topbar { flex-wrap: wrap; height: auto; padding: 8px 16px; row-gap: 6px; }
+  .topbar nav { flex-wrap: wrap; gap: 4px 12px; }
 }
 
 .formats { display: flex; flex-direction: column; gap: 10px; }
