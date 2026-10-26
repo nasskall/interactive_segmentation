@@ -1,7 +1,8 @@
 """Project models: SAM 2 fine-tuned on a project's own labels.
 
-An admin starts a training run for a project; it runs in a background
-thread (one at a time: training is CPU/GPU heavy) and is recorded in the
+An admin starts a training run for a project; it runs one at a time
+(training is CPU/GPU heavy) in its own process, ``train_worker``, which a
+background thread of the server starts and watches, and is recorded in the
 ``project_models`` table, which is the in-app model register: base
 checkpoint and its SHA-256, the adapter file and its SHA-256, which items
 were held out, and the held-out scores. Two kinds:
@@ -30,6 +31,15 @@ auto-labelling like the SAM 2 kind, and downloadable.
 
 Items, not objects, are split: ``HELD_OUT_FRACTION`` of the items (seeded
 shuffle) are held out for scoring and never trained on.
+
+Where the worker runs: ``ISEG_TRAIN_LAUNCHER`` is a command put in front of
+it, e.g. ``deploy/slurm_train.sh`` to run each training as a Slurm job on a
+GPU; unset, it runs as a plain child process. The job goes to the worker as
+``job.json`` in the model's folder; the worker writes ``progress.json`` and
+``result.json`` there, and only the server writes the database. Cancelling
+stops the worker's whole process group, so ``srun`` cancels the Slurm job.
+Each run's output is kept in ``<models>/logs/``. ``ISEG_TRAIN_DEVICE``
+overrides the worker's device (default: the first GPU it sees, else CPU).
 """
 
 from __future__ import annotations
@@ -37,7 +47,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import shlex
 import shutil
+import signal
+import subprocess
+import sys
 import threading
 import time
 from contextlib import closing
@@ -56,6 +71,8 @@ MIN_IMAGES = 10             # done images an automatic model needs
 HELD_OUT_FRACTION = 0.2
 MAX_STEPS = 5000
 TEACHER_MAP_SIDE = 512      # students: teacher maps of unlabelled images stored this large
+ROOT = Path(__file__).resolve().parents[2]
+STOP_GRACE = 30             # seconds a cancelled worker gets before it is killed
 
 
 def file_sha256(path: Path) -> str:
@@ -305,16 +322,36 @@ def student_summary(conn, project_id: int) -> dict:
 FitFn = Callable[[dict, Callable[..., None], Callable[[], bool]], dict]
 
 
+def log_path(models_dir: Path, project_id: int, model_id: int) -> Path:
+    """Where a training run's output is kept."""
+    return Path(models_dir) / 'logs' / f'project_{project_id}_model_{model_id}.log'
+
+
+def _read_json(path: Path) -> Optional[dict]:
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+
+
 class TrainingRunner:
-    """Runs one training job at a time in a background thread. ``fit(job,
-    report, should_stop)`` does the work and returns ``{'metrics': ...,
-    'adapter_file': ...}``; by default ``FITS[kind]`` (tests set ``fit``)."""
+    """Runs one training job at a time: a background thread starts the
+    ``train_worker`` process (through ``launcher``, e.g. Slurm) and copies its
+    progress and result into the database. ``fit(job, report, should_stop)``,
+    if set, runs in that thread instead (tests); either way it returns
+    ``{'metrics': ..., 'adapter_file': ...}``. ``worker_fit``
+    ("module:function") makes the worker run that function (tests)."""
 
     def __init__(self, db: Database, images: ImageStore, models_dir: Path,
-                 weights_dir: Path, device: str, fit: Optional[FitFn] = None):
+                 weights_dir: Path, device: str, fit: Optional[FitFn] = None,
+                 launcher: Optional[list[str]] = None, worker_device: Optional[str] = None):
         self.db, self.images, self.device = db, images, device
         self.models_dir, self.weights_dir = Path(models_dir), Path(weights_dir)
         self.fit = fit
+        self.launcher = (shlex.split(os.environ.get('ISEG_TRAIN_LAUNCHER', ''))
+                         if launcher is None else list(launcher))
+        self.worker_device = worker_device or os.environ.get('ISEG_TRAIN_DEVICE') or None
+        self.worker_fit: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
         self._running_id: Optional[int] = None
         self._cancel = threading.Event()
@@ -371,6 +408,7 @@ class TrainingRunner:
             teacher = (dict(conn.execute('SELECT * FROM project_models WHERE id = ?',
                                          (teacher_id,)).fetchone()) if teacher_id else None)
         job = {'id': model_id, 'project_id': project_id, 'kind': kind, 'arch': arch,
+               'user': user['username'],
                'teacher': teacher, 'unlabelled': unlabelled, 'classes': classes,
                'models_dir': self.models_dir,
                'base_model_type': base_model_type,
@@ -404,19 +442,20 @@ class TrainingRunner:
     def _work(self, job: dict) -> None:
         model_id = job['id']
         self._set(model_id, status='running')
-        last = [0.0]
+        last = {'at': 0.0, 'phase': None}
 
         def report(phase: str, done: int, total: int, loss: Optional[float] = None) -> None:
-            # Throttled: the training loop calls this every step.
-            if time.monotonic() - last[0] < 2 and done != total:
+            # Throttled within a phase: the training loop calls this every step.
+            if (phase == last['phase'] and time.monotonic() - last['at'] < 2
+                    and done != total):
                 return
-            last[0] = time.monotonic()
+            last.update(at=time.monotonic(), phase=phase)
             self._set(model_id, progress=json.dumps(
                 {'phase': phase, 'done': done, 'total': total, 'loss': loss}))
 
-        fit = self.fit or FITS['student' if job['arch'] == 'unet' else job['kind']]
         try:
-            result = fit(job, report, self._cancel.is_set)
+            result = (self.fit(job, report, self._cancel.is_set) if self.fit is not None
+                      else self._run_worker(job))
         except Exception as exc:
             cancelled = self._cancel.is_set()
             self._set(model_id, status='cancelled' if cancelled else 'failed',
@@ -427,6 +466,8 @@ class TrainingRunner:
                              target=f'project_model:{model_id}',
                              detail=None if cancelled else {'error': str(exc)[:500]})
             return
+        for f in ('job.json', 'progress.json', 'result.json'):
+            (job['out_dir'] / f).unlink(missing_ok=True)
         adapter = job['out_dir'] / result['adapter_file']
         sha = file_sha256(adapter)
         extra = {'base_sha256': result['base_sha256']} if result.get('base_sha256') else {}
@@ -435,6 +476,77 @@ class TrainingRunner:
                   adapter_sha256=sha, finished_at=now(), **extra)
         audit.record_now(self.db, 'model.train_done', target=f'project_model:{model_id}',
                          detail={'adapter_sha256': sha, 'metrics': result['metrics']})
+
+
+    def _run_worker(self, job: dict) -> dict:
+        """Run ``job`` in a ``train_worker`` process (through the launcher)
+        and wait for it, copying its progress into the database. Returns its
+        result; raises if it failed or was cancelled."""
+        out = Path(job['out_dir'])
+        out.mkdir(parents=True, exist_ok=True)
+        for f in ('progress.json', 'result.json'):
+            (out / f).unlink(missing_ok=True)
+        spec = {k: str(v) if isinstance(v, Path) else v for k, v in job.items() if k != 'images'}
+        spec.update(items_dir=str(self.images.root), device=self.worker_device)
+        (out / 'job.json').write_text(json.dumps(spec), encoding='utf-8')
+        argv = [*self.launcher, sys.executable, '-m', 'server.labelling.train_worker',
+                str(out / 'job.json')]
+        if self.worker_fit:
+            argv += ['--fit', self.worker_fit]
+        env = {**os.environ, 'PYTHONUNBUFFERED': '1',
+               # For the Slurm launcher: job name and comment say whose run it is.
+               'ISEG_JOB_NAME': f"iseg-m{job['id']}",
+               'ISEG_JOB_COMMENT': f"iseg project model {job['id']} project {job['project_id']} "
+                                   f"user {job['user']}"}
+        log = log_path(self.models_dir, job['project_id'], job['id'])
+        log.parent.mkdir(parents=True, exist_ok=True)
+        self._set(job['id'], progress=json.dumps(
+            {'phase': 'waiting for the scheduler' if self.launcher else 'starting',
+             'done': 0, 'total': 0, 'loss': None}))
+        stopping = None
+        with open(log, 'ab') as lf:
+            proc = subprocess.Popen(argv, cwd=ROOT, env=env, stdout=lf, stderr=subprocess.STDOUT,
+                                    start_new_session=os.name == 'posix')
+            seen = None
+            while True:
+                try:
+                    rc = proc.wait(timeout=2)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                if self._cancel.is_set():
+                    if stopping is None:
+                        stopping = time.monotonic()
+                        _signal(proc, signal.SIGTERM)
+                    elif time.monotonic() - stopping > STOP_GRACE:
+                        _signal(proc, getattr(signal, 'SIGKILL', signal.SIGTERM))
+                progress = _read_json(out / 'progress.json')
+                if progress and progress != seen:
+                    self._set(job['id'], progress=json.dumps(progress))
+                    seen = progress
+        progress = _read_json(out / 'progress.json')
+        if progress and progress != seen:
+            self._set(job['id'], progress=json.dumps(progress))
+        result = _read_json(out / 'result.json') or {}
+        if result.get('ok') and rc == 0:
+            return result
+        if self._cancel.is_set() or result.get('cancelled'):
+            raise RuntimeError('cancelled')
+        tail = log.read_text(encoding='utf-8', errors='replace').strip().splitlines()[-3:]
+        raise RuntimeError(result.get('error') or f"worker exited with code {rc}: "
+                           + ' | '.join(tail) + f' (log: {log.name})')
+
+
+def _signal(proc: subprocess.Popen, sig) -> None:
+    """Signal the worker and everything it started (its own session on
+    Linux, so ``srun`` receives it and cancels the Slurm job)."""
+    try:
+        if os.name == 'posix':
+            os.killpg(proc.pid, sig)
+        else:
+            proc.terminate()
+    except (ProcessLookupError, OSError):
+        pass
 
 
 def _examples(objects: list[dict], images: ImageStore):

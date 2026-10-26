@@ -178,7 +178,8 @@ export interface ProjectModel {
   base_checkpoint: string;
   base_sha256: string | null;
   steps: number;
-  progress: { phase: string; done: number; total: number; loss: number | null } | null;
+  progress: { phase: string; done: number; total: number; loss: number | null;
+              slurm_job?: string | null } | null;
   train_objects: number;
   train_items: number;
   held_out_items: number[];

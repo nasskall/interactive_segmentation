@@ -51,6 +51,9 @@ def main():
 
     manager = ModelManager(model, device, 'RITM', DEFAULT_CHECKPOINT, WEIGHTS_DIR)
     app = create_app(manager, static_dir=ROOT / 'frontend' / 'dist', data_dir=args.data_dir)
+    launcher = app.state.labelling.training.launcher
+    print(f"Project-model training: {' '.join(launcher) if launcher else 'local worker process'} "
+          '(ISEG_TRAIN_LAUNCHER)', flush=True)
     if app.state.labelling.setup_token:
         print('\nNo users yet. Create the first admin with this one-time setup token:\n'
               f'    {app.state.labelling.setup_token}\n'

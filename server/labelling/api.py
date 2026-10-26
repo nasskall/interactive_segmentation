@@ -494,6 +494,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         for item_id in item_ids:
             ctx.images.delete(item_id)
         shutil.rmtree(models_dir / f'project_{project_id}', ignore_errors=True)
+        for log in (models_dir / 'logs').glob(f'project_{project_id}_model_*.log'):
+            log.unlink(missing_ok=True)
         return Response(status_code=204)
 
     @router.get('/projects/{project_id}/progress')
@@ -1059,6 +1061,7 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         conn.commit()
         shutil.rmtree(models_dir / f"project_{m['project_id']}" / f'model_{model_id}',
                       ignore_errors=True)
+        training.log_path(models_dir, m['project_id'], model_id).unlink(missing_ok=True)
         return Response(status_code=204)
 
     # ── automatic labelling ───────────────────────────────────────────────
