@@ -570,7 +570,8 @@ function ModelStatusCell({ m }: { m: ProjectModel }) {
       <span className={`badge status-${m.status}`}>{STATUS_LABELS[m.status]}</span>
       {m.status === 'running' && p && (
         <div className="meta">{p.phase} {p.done}/{p.total}
-          {p.loss !== null && ` · loss ${p.loss.toFixed(3)}`}</div>
+          {p.loss !== null && ` · loss ${p.loss.toFixed(3)}`}
+          {p.slurm_job && ` · Slurm job ${p.slurm_job}`}</div>
       )}
       {m.error && <div className="error-text small">{m.error}</div>}
     </div>
