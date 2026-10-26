@@ -238,16 +238,22 @@ def test_student_auto_labels_and_downloads(admin, monkeypatch):
         'class_id': r['proposals'][0]['class_id'], 'from_proposal': {'set': r['set'], 'index': 0}})
     assert a['model']['adapter']['arch'] == 'unet' and a['model']['mode'] == 'automatic'
 
+    def student_onnx(path, out_dir):
+        (out_dir / 'model.onnx').write_bytes(b'onnx')
+        return out_dir / 'model.onnx', {'file': 'model.onnx', 'sha256': 'abc'}
+    monkeypatch.setattr(training, 'student_onnx', student_onnx)
     res = admin.get(f"/api/project-models/{m['id']}/download")
     assert res.status_code == 200, res.text
     zf = zipfile.ZipFile(io.BytesIO(res.content))
-    assert sorted(zf.namelist()) == ['README.txt', 'model.pt', 'model_card.json']
+    assert sorted(zf.namelist()) == ['README.txt', 'model.onnx', 'model.pt', 'model_card.json']
+    assert zf.read('model.onnx') == b'onnx'
     path = _ctx(admin).training.models_dir / m['adapter_file']
     assert zf.read('model.pt') == path.read_bytes()
     card = json.loads(zf.read('model_card.json'))
     assert (card['id'], card['arch']) == (m['id'], 'unet')
     assert card['adapter_sha256'] == m['adapter_sha256']
     assert 'Not for diagnosis' in card['intended_use']
+    assert card['onnx'] == {'file': 'model.onnx', 'sha256': 'abc'}
     assert 'U-Net' in zf.read('README.txt').decode()
     actions = [e['action'] for e in admin.ok('get', '/api/audit', params={'action': 'model.'})]
     assert actions[0] == 'model.download'

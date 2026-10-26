@@ -9,6 +9,10 @@ from the labels of fully labelled images and, on every other image of the
 project, from the teacher's probability maps, so unlabelled images add
 training data. Images are resized to a square ``INPUT_SIZE`` (aspect not
 kept) with flip augmentation; outputs are resized back.
+
+``export_onnx`` writes a single-file ONNX model that takes raw RGB (0..255)
+at ``INPUT_SIZE`` and returns per-class probabilities, so it runs anywhere
+ONNX Runtime does, without PyTorch or this repository.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from .few_shot_trainer import _soft_iou
@@ -153,6 +158,38 @@ def payload(model, classes: list[dict], encoder: str = ENCODER, size: int = INPU
     return {'kind': 'student', 'arch': 'unet', 'encoder': encoder, 'input_size': size,
             'classes': classes, 'state_dict': {k: v.detach().cpu() for k, v in
                                                model.state_dict().items()}}
+
+
+class _RawRGB(nn.Module):
+    """The student with its input normalisation and output sigmoid inside:
+    float RGB 0..255 (N, 3, S, S) in, probabilities (N, classes, S, S) out."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.register_buffer('mean', torch.tensor(MEAN * 255).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor(STD * 255).view(1, 3, 1, 1))
+
+    def forward(self, image):
+        return torch.sigmoid(self.model((image - self.mean) / self.std))
+
+
+ONNX_INPUT, ONNX_OUTPUT = 'image', 'probabilities'
+
+
+def export_onnx(model, path: Path, size: int = INPUT_SIZE) -> None:
+    """Write ``model`` as one ONNX file (opset 18, weights embedded, any
+    batch size). Input ``image``: float32 (N, 3, size, size) RGB 0..255;
+    output ``probabilities``: float32 (N, classes, size, size). Needs the
+    ``onnx`` and ``onnxscript`` packages."""
+    wrapped = _RawRGB(model.cpu().eval()).eval()
+    torch.onnx.export(wrapped, (torch.zeros(1, 3, size, size),), str(path),
+                      input_names=[ONNX_INPUT], output_names=[ONNX_OUTPUT],
+                      dynamic_shapes={'image': {0: torch.export.Dim('batch', min=1, max=256)}},
+                      opset_version=18, dynamo=True, external_data=False,
+                      # The exporter's progress lines contain emoji that a
+                      # Windows console or log file encoding cannot print.
+                      verbose=False)
 
 
 def load(saved: dict):

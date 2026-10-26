@@ -103,11 +103,14 @@ python demo.py
 The same segmentation is also available as a web app: a FastAPI backend
 (`server/`) and a React frontend (`frontend/`). It currently covers the core
 workflow (model selection, image upload, positive/negative clicks, undo, finish,
-auto-segment, mask download). LoRA adaptation and fine-tuning are still
-desktop-only.
+auto-segment, mask download). Online adaptation ("Adapt now") is
+desktop-only; in the web app, admins train project models instead (see
+*Project models* below).
 
 ```bash
 python -m pip install fastapi "uvicorn[standard]" python-multipart
+# Project students and their ONNX download (optional)
+python -m pip install segmentation-models-pytorch==0.5.0 onnx==1.23.2 onnxscript
 
 # Build the frontend once (needs Node.js 18+)
 cd frontend && npm install && npm run build && cd ..
@@ -207,7 +210,8 @@ images, and *Mark done & next* jumps to the next unfinished one.
   standalone U-Net (ResNet-18 encoder) on the done images' labels plus the
   automatic model's masks on every other image, scored next to it on the
   held-out images. It auto-labels about ten times faster and, like every
-  finished model, can be downloaded with a model card.
+  finished model, can be downloaded with a model card; a student's download
+  also holds `model.onnx`, which runs with ONNX Runtime alone (no PyTorch).
 
 On first start with an empty `data/`, the server prints a one-time setup
 token. Create the first admin with it via `POST /api/auth/setup`; every other

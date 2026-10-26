@@ -181,10 +181,45 @@ def automatic_summary(conn, project_id: int) -> dict:
             'min_images': MIN_IMAGES, 'max_steps': MAX_STEPS, 'problems': problems}
 
 
+def student_onnx(path: Path, out_dir: Path) -> tuple[Optional[Path], dict]:
+    """Export a saved student to ONNX in ``out_dir``: (file, model-card
+    entry); (None, entry saying why) when the ONNX packages are missing."""
+    import torch
+
+    from isegm.adaptation import student
+    try:
+        import onnx  # noqa: F401
+        import onnxscript  # noqa: F401
+    except ImportError:
+        return None, {'file': None, 'reason': 'onnx / onnxscript not installed on the server'}
+    model, size = student.load(torch.load(path, map_location='cpu', weights_only=True))
+    out = out_dir / 'model.onnx'
+    student.export_onnx(model, out, size)
+    return out, {'file': 'model.onnx', 'sha256': file_sha256(out), 'opset': 18,
+                 'input': f'{student.ONNX_INPUT}: float32 [N, 3, {size}, {size}], RGB 0..255, '
+                          f'the image resized to {size} x {size}',
+                 'output': f'{student.ONNX_OUTPUT}: float32 [N, classes, {size}, {size}], '
+                           'per-class probability in the order of "classes"; threshold at 0.5 '
+                           'and resize back to the image'}
+
+
 def model_readme(m) -> str:
     """How to use a downloaded model, by kind."""
     if m['arch'] == 'unet':
         return """A standalone segmentation network (U-Net, segmentation_models_pytorch).
+
+model.onnx runs with ONNX Runtime alone (pip install onnxruntime), no PyTorch:
+
+    import cv2, numpy as np, onnxruntime as ort
+    sess = ort.InferenceSession('model.onnx')
+    size = sess.get_inputs()[0].shape[2]
+    rgb = cv2.cvtColor(cv2.imread('image.jpg'), cv2.COLOR_BGR2RGB)
+    x = cv2.resize(rgb, (size, size), interpolation=cv2.INTER_AREA)
+    x = x.astype(np.float32).transpose(2, 0, 1)[None]
+    probs = sess.run(None, {'image': x})[0][0]           # (classes, size, size)
+    masks = [cv2.resize(p, rgb.shape[1::-1]) > 0.5 for p in probs]
+
+model.pt is the same model as PyTorch weights:
 
     import torch
     from isegm.adaptation import student          # from this repository

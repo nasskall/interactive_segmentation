@@ -997,7 +997,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
     def download_project_model(model_id: int, user=Depends(admin_user),
                                conn=Depends(get_db, scope='function')):
         """Zip of a finished model: its weights file, a model card (what it
-        is, how it was trained and scored, hashes) and a short README."""
+        is, how it was trained and scored, hashes) and a short README;
+        students also as ONNX (``model.onnx``), which runs without PyTorch."""
         m = get_project_model(conn, model_id)
         if m['status'] != 'done':
             raise HTTPException(409, f"Model {model_id} is {m['status']}, not finished")
@@ -1012,10 +1013,22 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
                 'weights_file': 'model.pt'}
         fd, tmp = tempfile.mkstemp(suffix='.zip')
         os.close(fd)
-        with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.write(path, 'model.pt')
-            zf.writestr('model_card.json', json.dumps(card, indent=1))
-            zf.writestr('README.txt', training.model_readme(m))
+        onnx_dir = tempfile.mkdtemp()
+        try:
+            onnx_file = None
+            if m['arch'] == 'unet':
+                onnx_file, card['onnx'] = training.student_onnx(path, Path(onnx_dir))
+            with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.write(path, 'model.pt')
+                if onnx_file is not None:
+                    zf.write(onnx_file, 'model.onnx')
+                zf.writestr('model_card.json', json.dumps(card, indent=1))
+                zf.writestr('README.txt', training.model_readme(m))
+        except BaseException:
+            os.unlink(tmp)
+            raise
+        finally:
+            shutil.rmtree(onnx_dir, ignore_errors=True)
         audit.record(conn, 'model.download', user=user, target=f'project_model:{model_id}',
                      detail={'adapter_sha256': m['adapter_sha256']})
         name = export.safe_name(f"{p['name']}_model_{model_id}")

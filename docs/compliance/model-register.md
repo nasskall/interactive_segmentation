@@ -83,7 +83,9 @@ other images; held-out images are used for neither, and student and teacher
 are scored on them side by side. Students propose labels like the SAM 2
 kind. Any finished project model can be **downloaded** by an admin (weights,
 model card with classes, training data, held-out scores and hashes,
-README); downloads are audit-logged (`model.download`). A downloaded model
+README); a student's download also holds `model.onnx` (opset 18, the same
+weights with input normalisation and sigmoid built in), whose SHA-256 is in
+the model card. Downloads are audit-logged (`model.download`). A downloaded model
 is a copy outside the platform's controls: its model card states its
 intended use, and whoever uses it is responsible for its validation there.
 
