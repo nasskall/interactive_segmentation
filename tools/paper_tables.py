@@ -89,6 +89,7 @@ def load_summaries(items: list[str]) -> list[tuple[str, dict]]:
     """A missing summary (runs not finished yet) becomes a column of dashes."""
     out = []
     for name, path in pairs(items, '--summary'):
+        path = path.split('::')[0]
         if Path(path).is_file():
             out.append((name, json.loads(Path(path).read_text(encoding='utf-8'))))
         else:
@@ -97,32 +98,38 @@ def load_summaries(items: list[str]) -> list[tuple[str, dict]]:
     return out
 
 
+def set_metrics(items: list[str], default: list[str]) -> list[list[str]]:
+    """Metrics per --summary: SET=path::m1,m2 overrides --metrics for that column group."""
+    return [path.split('::')[1].split(',') if '::' in path else default
+            for _, path in pairs(items, '--summary')]
+
+
 def table(args) -> str:
     sets = load_summaries(args.summary)
+    metrics = set_metrics(args.summary, args.metrics)
     rows = pairs(args.rows, '--rows') if args.rows else \
         [(m, m) for m in sets[0][1]['models']]
     best = {}
-    for s, summ in sets:
-        for m in args.metrics:
+    for (s, summ), ms in zip(sets, metrics):
+        for m in ms:
             vals = [summ['models'][r][m]['mean'] for r, _ in rows if r in summ['models']]
             if vals:
                 best[s, m] = min(vals) if lower_better(m) else max(vals)
 
     multi = len(sets) > 1
-    head = ['Model'] + [HEADS.get(m, m) for _ in sets for m in args.metrics]
+    head = ['Model'] + [HEADS.get(m, m) for ms in metrics for m in ms]
     body = []
     if multi:
-        body.append(' & ' + ' & '.join(rf'\multicolumn{{{len(args.metrics)}}}{{c}}{{{tex(s)}}}'
-                                       for s, _ in sets) + r' \\')
-        start = 2
-        body.append(' '.join(rf'\cmidrule(lr){{{start + i * len(args.metrics)}-'
-                             rf'{start + (i + 1) * len(args.metrics) - 1}}}'
+        body.append(' & ' + ' & '.join(rf'\multicolumn{{{len(ms)}}}{{c}}{{{tex(s)}}}'
+                                       for (s, _), ms in zip(sets, metrics)) + r' \\')
+        starts = np.cumsum([2] + [len(ms) for ms in metrics])
+        body.append(' '.join(rf'\cmidrule(lr){{{starts[i]}-{starts[i + 1] - 1}}}'
                              for i in range(len(sets))))
     body += [' & '.join(head) + r' \\', r'\midrule']
     for key, name in rows:
         cells = [tex(name)]
-        for s, summ in sets:
-            for m in args.metrics:
+        for (s, summ), ms in zip(sets, metrics):
+            for m in ms:
                 r = summ['models'].get(key)
                 if r is None:
                     cells.append('--')

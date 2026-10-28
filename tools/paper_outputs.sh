@@ -60,6 +60,19 @@ for set in isic clean; do
     --label "tab:rclicks_$set" --out "$OUT/rclicks_$set.tex"
 done
 
+# Main-text summary of both: box IoU and realistic-click NoC@90 in one table
+# (the two tables above go to the supplementary material).
+for set in isic clean; do
+  $T table --summary "Tight box=$RES/$set/summary_box0.json::iou" \
+    --summary "Box, 10% jitter=$RES/$set/summary_box0.1.json::iou" \
+    --summary "RClicks (0, 1)=$RES/$set/summary_rc0-1.json::noc@90" \
+    --summary "RClicks (0, 0.1)=$RES/$set/summary_rc0-0.1.json::noc@90" --metrics iou \
+    --rows "sam=SAM" "sam2=SAM 2" "simpleclick=SimpleClick" "medsam=MedSAM" "imis=IMIS-Net" \
+           "accepted=Student (accepted)" "gt=Student (expert)" \
+    --caption "Robustness on the ${NAME[$set]} test set: IoU for a single tight or jittered box (each side shifted by up to 10\% of its size) and NoC@90 for realistic clicks sampled from the whole clickability distribution or its least likely tenth, with 95\% bootstrap confidence intervals below each value." \
+    --label "tab:robust_$set" --out "$OUT/robust_$set.tex"
+done
+
 $T curves --panels "ISIC 2018=$RES/isic" "Challenge-disjoint=$RES/clean" \
   --groups "SAM 2=base_sam2.json" "SAM 2, adapted=adapted_sam2.json" \
            "SimpleClick=base_simpleclick.json" "IMIS-Net=base_imis.json" \
