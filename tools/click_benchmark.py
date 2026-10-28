@@ -110,6 +110,7 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
 
 
 CLICK_TIMES: list[float] = []   # seconds per click, image encoding excluded
+LAST_CURVES: dict[str, list[float]] = {}   # object name -> IoU after each click, last evaluate()
 
 
 def click_until(ctrl: InteractiveController, image, gt, max_clicks: int,
@@ -134,9 +135,11 @@ def click_until(ctrl: InteractiveController, image, gt, max_clicks: int,
 
 def evaluate(ctrl, objects, max_clicks: int) -> dict:
     CLICK_TIMES.clear()
+    LAST_CURVES.clear()
     curves = []
-    for _, image, gt in objects:
+    for name, image, gt in objects:
         curves.append(click_until(ctrl, image, gt, max_clicks, None))
+        LAST_CURVES[name] = curves[-1]
         ctrl.reset_last_object(update_image=False)
     curves = np.array(curves)
 
@@ -165,6 +168,16 @@ def load_model(kind: str):
     if kind == 'simpleclick':
         return iu.load_simpleclick_model(str(ckpt), DEVICE)
     return iu.load_sam2_model(str(ckpt), label, DEVICE)
+
+
+def save_curves(args, name: str, stage: str):
+    """The last evaluate()'s per-object IoU curves, with what produced them."""
+    args.per_image.parent.mkdir(parents=True, exist_ok=True)
+    args.per_image.write_text(json.dumps({
+        'model': name, 'stage': stage, 'adapter': str(args.adapter) if args.adapter else None,
+        'data': str(args.data), 'eval_split': args.eval_split, 'seed': args.seed,
+        'max_clicks': args.max_clicks, 'curves': LAST_CURVES}, indent=1))
+    print(f'  per-image curves -> {args.per_image}')
 
 
 def main():
@@ -198,6 +211,10 @@ def main():
                     help="manifest split to score on (e.g. 'reserve' for a final, untouched check)")
     ap.add_argument('--adapter', type=Path, default=None,
                     help='LoRA adapter to load first (e.g. a distilled student from tools/distill.py)')
+    ap.add_argument('--no-adapt', action='store_true',
+                    help='score the eval objects once and stop (no session, no adaptation)')
+    ap.add_argument('--per-image', type=Path, default=None,
+                    help='write every eval object\'s IoU curve to this JSON (tools/paper_stats.py reads it)')
     args = ap.parse_args()
 
     np.random.seed(args.seed)
@@ -255,6 +272,10 @@ def main():
     t = time.time()
     base = evaluate(ctrl, evals, args.max_clicks)
     print(f'  baseline  {fmt(base)}   ({time.time() - t:.0f}s)')
+    if args.no_adapt:
+        if args.per_image:
+            save_curves(args, name, 'baseline')
+        return
 
     ctrl.online_recording = True
     session_clicks = []
@@ -300,6 +321,8 @@ def main():
     print(f'            ({time.time() - t:.0f}s)')
     adapted = evaluate(ctrl, evals, args.max_clicks)
     print(f'  adapted   {fmt(adapted)}')
+    if args.per_image:
+        save_curves(args, name, 'adapted')
 
     for _ in range(args.presses):
         ctrl.rollback_adapter()
