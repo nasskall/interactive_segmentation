@@ -14,6 +14,7 @@ PY=${PY:-.venv/bin/python}
 [ -x "$PY" ] || PY=.venv/Scripts/python.exe
 T="$PY tools/paper_tables.py"
 SETS=(--summary "ISIC 2018=$RES/isic/summary.json" --summary "Challenge-disjoint=$RES/clean/summary.json")
+declare -A NAME=([isic]="ISIC 2018" [clean]="challenge-disjoint")
 mkdir -p "$OUT"
 
 CLICK_ROWS=("base=SAM 2" "adapted=SAM 2, adapted online" "simpleclick=SimpleClick" "sam=SAM"
@@ -24,15 +25,19 @@ CMP_ROWS=("accepted:base=Accepted vs. SAM 2" "accepted:adapted=Accepted vs. adap
           "accepted:simpleclick=Accepted vs. SimpleClick" "accepted:imis=Accepted vs. IMIS-Net")
 
 $T table "${SETS[@]}" --metrics iou@1 noc@90 --rows "${CLICK_ROWS[@]}" --seed-sd \
+  --caption "Robot-click results on both test sets: mean IoU after the first click and NoC@90, with 95\% bootstrap confidence intervals below each value and the best value in bold. Student rows average three seeds." \
   --label tab:click --out "$OUT/click.tex"
 $T compare "${SETS[@]}" --metrics noc@90 --rows "${CMP_ROWS[@]}" \
+  --caption "Paired bootstrap comparisons of NoC@90 (first model minus second, with its 95\% confidence interval and two-sided \$p\$); negative values favor the first model." \
   --label tab:click_cmp --out "$OUT/click_cmp.tex"
 
 # Challenge-disjoint set (results/clean) by subgroup (tools/clean_subgroups.py).
 $T table --summary "Dominant source=$RES/clean/summary_dominant_source.json" \
   --summary "Other sources=$RES/clean/summary_other_sources.json" \
   --summary 'Lesions $\geq$5\%='"$RES/clean/summary_lesion_ge5.json" \
-  --metrics noc@90 --rows "${CLICK_ROWS[@]}" --label tab:subgroups --out "$OUT/subgroups.tex"
+  --metrics noc@90 --rows "${CLICK_ROWS[@]}" \
+  --caption "NoC@90 on subgroups of the challenge-disjoint test set, with 95\% bootstrap confidence intervals below each value." \
+  --label tab:subgroups --out "$OUT/subgroups.tex"
 
 # Box prompts: tight and 10% jitter side by side, per test set.
 for set in isic clean; do
@@ -40,6 +45,7 @@ for set in isic clean; do
     --summary "10% jitter=$RES/$set/summary_box0.1.json" --metrics iou dice \
     --rows "sam=SAM" "sam2=SAM 2" "medsam=MedSAM" "imis=IMIS-Net" \
            "accepted=Student (accepted)" "gt=Student (expert)" \
+    --caption "Single box prompt on the ${NAME[$set]} test set: IoU and Dice for the tight box and a box with each side shifted by up to 10\% of its size, with 95\% bootstrap confidence intervals below each value." \
     --label "tab:box_$set" --out "$OUT/box_$set.tex"
 done
 
@@ -50,6 +56,7 @@ for set in isic clean; do
     --rows "sam2=SAM 2" "simpleclick=SimpleClick" "imis=IMIS-Net" \
            "accepted=Student (accepted)" "robot_accepted=Same, robot clicks" \
            "gt=Student (expert)" \
+    --caption "Realistic clicks on the ${NAME[$set]} test set, sampled from the clickability model over its whole distribution or its least likely tenth, with 95\% bootstrap confidence intervals below each value. The second student row repeats the robot-click result of the same model." \
     --label "tab:rclicks_$set" --out "$OUT/rclicks_$set.tex"
 done
 
