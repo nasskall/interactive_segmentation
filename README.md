@@ -149,9 +149,9 @@ Main endpoints (all under `/api`):
 
 All of these need a signed-in account (see below), and a session is visible
 only to the account that opened it. Every editing call returns the full
-session state, including an RGBA overlay as a data URL. Sessions live in memory, at most 16 at a time with the least
-recently used dropped first. All sessions share one model, and requests run
-one at a time.
+session state, including an RGBA overlay as a data URL. Sessions live in
+memory, at most 16 at a time, with the least recently used dropped first.
+All sessions share one model, and requests run one at a time.
 
 ### Labelling projects
 
