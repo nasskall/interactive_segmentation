@@ -31,6 +31,16 @@ $T compare "${SETS[@]}" --metrics noc@90 --rows "${CMP_ROWS[@]}" \
   --caption "Paired bootstrap comparisons of NoC@90 (first model minus second, with its 95\% confidence interval and two-sided \$p\$); negative values favor the first model." \
   --label tab:click_cmp --out "$OUT/click_cmp.tex"
 
+# Every click baseline as shipped and after online adaptation (supplementary).
+ALL_ROWS=("ritm_coco=RITM (COCO+LVIS)" "ritm=RITM (ISIC 2018)" "simpleclick=SimpleClick" "sam=SAM"
+          "base=SAM 2" "imis=IMIS-Net" "adapted_ritm_coco=RITM (COCO+LVIS), adapted"
+          "adapted_ritm=RITM (ISIC 2018), adapted" "adapted_simpleclick=SimpleClick, adapted"
+          "adapted_sam=SAM, adapted" "adapted=SAM 2, adapted" "teacher=Student (teacher)"
+          "accepted=Student (accepted)" "gt=Student (expert)")
+$T table "${SETS[@]}" --metrics noc@85 noc@90 --rows "${ALL_ROWS[@]}" \
+  --caption "NoC@85 and NoC@90 of every click baseline as released and after online adaptation on the session images, with 95\% bootstrap confidence intervals below each value." \
+  --label tab:baselines --out "$OUT/baselines.tex"
+
 # Challenge-disjoint set (results/clean) by subgroup (tools/clean_subgroups.py).
 $T table --summary "Dominant source=$RES/clean/summary_dominant_source.json" \
   --summary "Other sources=$RES/clean/summary_other_sources.json" \

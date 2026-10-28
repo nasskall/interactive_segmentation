@@ -141,6 +141,9 @@ summaries() {   # summaries <results dir> <suffix> <extra paper_stats args>
   cmds+=("$PY tools/paper_stats.py base=$res/base_sam2.json adapted=$res/adapted_sam2.json \
     'teacher=$res/teacher_s*.json' 'accepted=$res/accepted_s*.json' 'gt=$res/gt_s*.json' \
     simpleclick=$res/base_simpleclick.json sam=$res/base_sam.json imis=$res/base_imis.json \
+    ritm=$res/base_ritm.json ritm_coco=$res/base_ritm_coco.json \
+    adapted_simpleclick=$res/adapted_simpleclick.json adapted_sam=$res/adapted_sam.json \
+    adapted_ritm=$res/adapted_ritm.json adapted_ritm_coco=$res/adapted_ritm_coco.json \
     --compare accepted:base accepted:adapted accepted:teacher gt:accepted accepted:simpleclick accepted:imis \
     $opt --json $res/summary$sfx.json")
   for jit in 0 0.1; do
