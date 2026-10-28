@@ -6,6 +6,7 @@
 #   bash tools/setup_benchmarks.sh            # code, venvs, checkpoints
 #   bash tools/setup_benchmarks.sh --data     # + ISIC 2018 (13.8 GB) and the clean IMA++ sets
 #   bash tools/setup_benchmarks.sh --smoke    # + a two-image run of every pipeline on the GPU
+# Then submit the experiments with tools/run_isic_benchmarks.sh.
 #
 # Run from the repository root. Layout (EXT defaults to ../external):
 #   $EXT/IMIS-Bench   + imis-venv      IMIS-Net, unmodified (tools/imis_benchmark.py)
