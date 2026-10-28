@@ -15,6 +15,9 @@ too.
 --compare A:B gives the paired bootstrap of A minus B on the images both
 were scored on (lower NoC is better, so a negative NoC difference favours A),
 with a two-sided bootstrap p-value.
+
+--names FILE restricts every model to the images listed in FILE (one name
+per line), e.g. a subgroup written by tools/clean_subgroups.py.
 """
 
 from __future__ import annotations
@@ -46,13 +49,19 @@ def run_scores(run: dict) -> dict[str, dict[str, float]]:
     return run['scores']
 
 
-def load_group(pattern: str) -> tuple[dict[str, dict[str, float]], list[dict[str, float]]]:
-    """Seed-averaged scores per image, and each seed's means."""
+def load_group(pattern: str, only: set[str] | None = None
+               ) -> tuple[dict[str, dict[str, float]], list[dict[str, float]]]:
+    """Seed-averaged scores per image, and each seed's means; only the images
+    in ``only`` when given."""
     files = sorted(glob.glob(pattern))
     if not files:
         sys.exit(f'No files match {pattern}')
     runs = [run_scores(json.loads(open(f, encoding='utf-8').read())) for f in files]
+    if only is not None:
+        runs = [{n: v for n, v in r.items() if n in only} for r in runs]
     names = set.intersection(*(set(r) for r in runs))
+    if not names:
+        sys.exit(f'{pattern}: no images left' + (' after --names' if only is not None else ''))
     if any(len(r) != len(names) for r in runs):
         print(f'  note: {pattern}: seeds cover different images; using the {len(names)} shared',
               file=sys.stderr)
@@ -75,21 +84,26 @@ def main():
     ap.add_argument('--n-boot', type=int, default=10000)
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--json', default=None, help='also write the summary here')
+    ap.add_argument('--names', default=None, help='only these images (file, one name per line)')
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
+    only = None
+    if args.names:
+        with open(args.names, encoding='utf-8') as f:
+            only = {line.strip() for line in f if line.strip()}
 
     groups = {}
     for g in args.groups:
         label, _, pattern = g.partition('=')
         if not pattern:
             sys.exit(f'Expected LABEL=GLOB, got {g}')
-        groups[label] = load_group(pattern)
+        groups[label] = load_group(pattern, only)
 
     kinds = {tuple(next(iter(avg.values()))) for avg, _ in groups.values()}
     if len(kinds) > 1:
         sys.exit('Mixed click-curve and box files; summarise them in separate calls')
     METRICS = CLICK_METRICS if kinds.pop() == CLICK_METRICS else BOX_METRICS
-    summary = {'models': {}, 'comparisons': {}}
+    summary = {'models': {}, 'comparisons': {}, 'names': args.names}
     print(f'{"model":<14}{"n":>6}{"seeds":>6}  ' + '  '.join(f'{m:>24}' for m in METRICS))
     for label, (avg, seeds) in groups.items():
         row, cells = {}, []
