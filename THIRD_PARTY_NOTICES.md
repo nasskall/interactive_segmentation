@@ -44,3 +44,27 @@ Used as installed dependencies (`segment_anything`, `sam2`), not vendored. Both
 are published by Meta under the Apache License 2.0. Model checkpoints are not
 distributed with this repository and must be obtained from their upstream model
 zoos.
+
+## MedSAM (Segment anything in medical images)
+
+- Source: `https://github.com/bowang-lab/MedSAM` (commit `d71e8a1`)
+- Licence: Apache License 2.0
+- Paper: Ma J., He Y., Li F., Han L., You C., Wang B., Nature
+  Communications 15:654 (2024), doi:10.1038/s41467-024-44824-z
+
+Adapted: the image preprocessing and box-prompt decoding of
+`MedSAM_Inference.py`, in the `MedSAM` class of `tools/box_benchmark.py`
+(changed: weights are loaded with `torch.load(..., weights_only=True)`
+instead of through the registry's checkpoint argument). The MedSAM checkpoint
+(`medsam_vit_b.pth`) is downloaded separately from the authors' release and
+is not distributed here.
+
+## IMIS-Bench (Interactive Medical Image Segmentation: A Benchmark Dataset and Baseline)
+
+- Source: `https://github.com/uni-medical/IMIS-Bench` (commit `f4519c0`)
+- Licence: none stated in the repository
+
+No IMIS-Bench code is included here. `tools/imis_benchmark.py` imports it
+from a separate, unmodified clone at run time. The IMIS-Net checkpoint is the
+authors' upload at `https://huggingface.co/1Junlong/IMIS-Net` (revision
+`c3d2edd`, Apache License 2.0), downloaded separately.

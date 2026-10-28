@@ -11,7 +11,8 @@ JSON it writes is the one tools/paper_stats.py reads.
 
 Each click goes to the centre of the largest error; IMIS-Net gets every click
 so far plus its previous low-resolution logits, as in the authors'
-predictor_example.ipynb.
+predictor_example.ipynb. With --box it instead gets one box per object, the
+same boxes tools/box_benchmark.py gives every other model.
 
 Setup (once):
     git clone https://github.com/uni-medical/IMIS-Bench.git ../external/IMIS-Bench
@@ -44,8 +45,10 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'tools'))
 
 from isegm.inference.clicker import Clicker    # noqa: E402  (numpy + cv2 only)
+from prompt_boxes import box_scores, gt_box     # noqa: E402  (numpy only)
 
 
 def load_split(data_dir: Path, split: str) -> list[tuple[str, np.ndarray, np.ndarray]]:
@@ -124,6 +127,13 @@ def click_curve(predictor, image, gt, max_clicks: int) -> list[float]:
     return ious
 
 
+def box_prediction(predictor, image, box: list[int]) -> np.ndarray:
+    predictor.set_image(image)
+    masks, _, _ = predictor.predict(point_coords=None, point_labels=None, box=np.array(box),
+                                    mask_input=None, text=None, multimask_output=False)
+    return np.asarray(masks).reshape(image.shape[:2]) > 0.5
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--imis-root', type=Path, required=True)
@@ -133,6 +143,9 @@ def main():
     ap.add_argument('--n-eval', type=int, default=None)
     ap.add_argument('--max-clicks', type=int, default=10)
     ap.add_argument('--per-image', type=Path, required=True)
+    ap.add_argument('--box', action='store_true', help='one box prompt per object instead of clicks')
+    ap.add_argument('--jitter', type=float, default=0.0, help='box jitter (see tools/prompt_boxes.py)')
+    ap.add_argument('--seed', type=int, default=0, help='box jitter seed')
     args = ap.parse_args()
     # Paths are resolved before build_predictor changes directory.
     imis_root, ckpt = args.imis_root.resolve(), args.checkpoint.resolve()
@@ -142,6 +155,23 @@ def main():
     evals = load_split(data, args.eval_split)[:args.n_eval]
     predictor = build_predictor(imis_root, ckpt, device)
     print(f'IMIS-Net on {device}; {data.name} {args.eval_split}: {len(evals)} eval objects', flush=True)
+
+    if args.box:
+        t0, scores, boxes = time.time(), {}, {}
+        with torch.no_grad():
+            for name, image, gt in evals:
+                boxes[name] = gt_box(gt, name, args.jitter, args.seed)
+                scores[name] = box_scores(box_prediction(predictor, image, boxes[name]), gt)
+        print(f'  box jitter {args.jitter}: IoU {np.mean([s["iou"] for s in scores.values()]):.3f}  '
+              f'Dice {np.mean([s["dice"] for s in scores.values()]):.3f}  '
+              f'{(time.time() - t0) / len(evals):.1f} s/image')
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps({
+            'model': 'imis', 'prompt': 'box', 'jitter': args.jitter, 'seed': args.seed,
+            'adapter': None, 'checkpoint': str(ckpt), 'data': str(data),
+            'eval_split': args.eval_split, 'boxes': boxes, 'scores': scores}, indent=1))
+        print(f'  per-image scores -> {out}')
+        return
 
     t0, curves = time.time(), {}
     with torch.no_grad():

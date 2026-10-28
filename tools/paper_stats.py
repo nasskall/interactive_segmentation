@@ -1,7 +1,9 @@
 """
 Summarise per-image click curves with bootstrap confidence intervals.
 
-Reads the JSON files that ``click_benchmark.py --per-image`` writes. Each
+Reads the JSON files that ``click_benchmark.py --per-image`` writes (click
+curves: mIoU@1/@5, NoC@85/90) or that box_benchmark.py writes (one box per
+object: IoU, Dice); the groups in one call must be of one kind. Each
 argument is LABEL=GLOB; the files a glob matches are seeds of one model:
 every per-image score is averaged over the seeds first, then a 95%
 bootstrap interval is taken over images. The spread between seeds is shown
@@ -24,7 +26,8 @@ import sys
 
 import numpy as np
 
-METRICS = ('iou@1', 'iou@5', 'noc@85', 'noc@90')
+CLICK_METRICS = ('iou@1', 'iou@5', 'noc@85', 'noc@90')
+BOX_METRICS = ('iou', 'dice')
 
 
 def per_image(curve: list[float], max_clicks: int) -> dict[str, float]:
@@ -37,19 +40,25 @@ def per_image(curve: list[float], max_clicks: int) -> dict[str, float]:
             'noc@85': noc(0.85), 'noc@90': noc(0.90)}
 
 
+def run_scores(run: dict) -> dict[str, dict[str, float]]:
+    if 'curves' in run:
+        return {n: per_image(c, run['max_clicks']) for n, c in run['curves'].items()}
+    return run['scores']
+
+
 def load_group(pattern: str) -> tuple[dict[str, dict[str, float]], list[dict[str, float]]]:
     """Seed-averaged scores per image, and each seed's means."""
     files = sorted(glob.glob(pattern))
     if not files:
         sys.exit(f'No files match {pattern}')
-    runs = [json.loads(open(f, encoding='utf-8').read()) for f in files]
-    names = set.intersection(*(set(r['curves']) for r in runs))
-    if any(len(r['curves']) != len(names) for r in runs):
+    runs = [run_scores(json.loads(open(f, encoding='utf-8').read())) for f in files]
+    names = set.intersection(*(set(r) for r in runs))
+    if any(len(r) != len(names) for r in runs):
         print(f'  note: {pattern}: seeds cover different images; using the {len(names)} shared',
               file=sys.stderr)
-    scores = [{n: per_image(r['curves'][n], r['max_clicks']) for n in names} for r in runs]
-    avg = {n: {m: float(np.mean([s[n][m] for s in scores])) for m in METRICS} for n in names}
-    seed_means = [{m: float(np.mean([s[n][m] for n in names])) for m in METRICS} for s in scores]
+    metrics = list(runs[0][next(iter(names))])
+    avg = {n: {m: float(np.mean([r[n][m] for r in runs])) for m in metrics} for n in names}
+    seed_means = [{m: float(np.mean([r[n][m] for n in names])) for m in metrics} for r in runs]
     return avg, seed_means
 
 
@@ -76,6 +85,10 @@ def main():
             sys.exit(f'Expected LABEL=GLOB, got {g}')
         groups[label] = load_group(pattern)
 
+    kinds = {tuple(next(iter(avg.values()))) for avg, _ in groups.values()}
+    if len(kinds) > 1:
+        sys.exit('Mixed click-curve and box files; summarise them in separate calls')
+    METRICS = CLICK_METRICS if kinds.pop() == CLICK_METRICS else BOX_METRICS
     summary = {'models': {}, 'comparisons': {}}
     print(f'{"model":<14}{"n":>6}{"seeds":>6}  ' + '  '.join(f'{m:>24}' for m in METRICS))
     for label, (avg, seeds) in groups.items():
