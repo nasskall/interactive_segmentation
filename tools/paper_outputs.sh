@@ -13,7 +13,7 @@ OUT=${2:-paper/draft/generated}
 PY=${PY:-.venv/bin/python}
 [ -x "$PY" ] || PY=.venv/Scripts/python.exe
 T="$PY tools/paper_tables.py"
-SETS=(--summary "ISIC 2018=$RES/isic/summary.json" --summary "Clean IMA++=$RES/clean/summary.json")
+SETS=(--summary "ISIC 2018=$RES/isic/summary.json" --summary "Challenge-disjoint=$RES/clean/summary.json")
 mkdir -p "$OUT"
 
 CLICK_ROWS=("base=SAM 2" "adapted=SAM 2, adapted online" "simpleclick=SimpleClick" "sam=SAM"
@@ -28,7 +28,7 @@ $T table "${SETS[@]}" --metrics iou@1 noc@90 --rows "${CLICK_ROWS[@]}" --seed-sd
 $T compare "${SETS[@]}" --metrics noc@90 --rows "${CMP_ROWS[@]}" \
   --label tab:click_cmp --out "$OUT/click_cmp.tex"
 
-# Clean set by subgroup (tools/clean_subgroups.py).
+# Challenge-disjoint set (results/clean) by subgroup (tools/clean_subgroups.py).
 $T table --summary "Dominant source=$RES/clean/summary_dominant_source.json" \
   --summary "Other sources=$RES/clean/summary_other_sources.json" \
   --summary 'Lesions $\geq$5\%='"$RES/clean/summary_lesion_ge5.json" \
@@ -53,7 +53,7 @@ for set in isic clean; do
     --label "tab:rclicks_$set" --out "$OUT/rclicks_$set.tex"
 done
 
-$T curves --panels "ISIC 2018=$RES/isic" "Clean IMA++=$RES/clean" \
+$T curves --panels "ISIC 2018=$RES/isic" "Challenge-disjoint=$RES/clean" \
   --groups "SAM 2=base_sam2.json" "SAM 2, adapted=adapted_sam2.json" \
            "SimpleClick=base_simpleclick.json" "IMIS-Net=base_imis.json" \
            "Student (teacher)=teacher_s*.json" "Student (accepted)=accepted_s*.json" \

@@ -8,12 +8,12 @@ Turn benchmark results into LaTeX tables and click-curve figures for the paper.
              reads the per-image JSONs that click_benchmark.py writes
 
     python tools/paper_tables.py table --summary "ISIC 2018=results/isic/summary.json" \\
-        --summary "Clean=results/clean/summary.json" --metrics iou@1 noc@90 \\
+        --summary "Challenge-disjoint=results/clean/summary.json" --metrics iou@1 noc@90 \\
         --rows "base=SAM 2" "accepted=Student (accepted)" "gt=Student (expert)" \\
         --caption "..." --label tab:click --out paper/draft/tables/click.tex
-    python tools/paper_tables.py compare --summary "Clean=results/clean/summary.json" \\
+    python tools/paper_tables.py compare --summary "Challenge-disjoint=results/clean/summary.json" \\
         --metrics noc@90 --rows "gt:accepted=Expert - accepted" --out ...
-    python tools/paper_tables.py curves --panels "ISIC 2018=results/isic" "Clean=results/clean" \\
+    python tools/paper_tables.py curves --panels "ISIC 2018=results/isic" "Challenge-disjoint=results/clean" \\
         --groups "SAM 2=base_sam2.json" "Student (accepted)=accepted_s*.json" --out fig.pdf
 
 Cells show the mean and its 95% bootstrap interval; the best mean of each
