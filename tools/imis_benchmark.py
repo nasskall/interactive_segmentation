@@ -109,9 +109,9 @@ class _DecoderCallAdapter:
         return getattr(self._net, name)
 
 
-def click_curve(predictor, image, gt, max_clicks: int) -> list[float]:
+def click_curve(predictor, image, gt, max_clicks: int, make_clicker=None) -> list[float]:
     predictor.set_image(image)
-    robot = Clicker(gt_mask=gt.astype(np.int32))
+    robot = make_clicker(gt, image) if make_clicker else Clicker(gt_mask=gt.astype(np.int32))
     pred = np.zeros_like(gt)
     logits, coords, labels, ious = None, [], [], []
     for _ in range(max_clicks):
@@ -145,8 +145,22 @@ def main():
     ap.add_argument('--per-image', type=Path, required=True)
     ap.add_argument('--box', action='store_true', help='one box prompt per object instead of clicks')
     ap.add_argument('--jitter', type=float, default=0.0, help='box jitter (see tools/prompt_boxes.py)')
-    ap.add_argument('--seed', type=int, default=0, help='box jitter seed')
+    ap.add_argument('--seed', type=int, default=0, help='box jitter / RClicks seed')
+    ap.add_argument('--clicker', choices=['robot', 'rclicks'], default='robot',
+                    help='simulated user (see tools/rclicks_clicker.py)')
+    ap.add_argument('--rclicks-band', default='0,1')
+    ap.add_argument('--rclicks-python', type=Path, default=ROOT.parent / 'external' / 'rclicks-venv' / 'bin' / 'python')
+    ap.add_argument('--rclicks-root', type=Path, default=ROOT.parent / 'external' / 'rclicks')
+    ap.add_argument('--rclicks-checkpoint', type=Path,
+                    default=ROOT.parent / 'external' / 'rclicks' / 'ckpt' / 'clickability_model.pth')
     args = ap.parse_args()
+    make_clicker = None
+    if args.clicker == 'rclicks':
+        from rclicks_clicker import RClicker, RClicksClient
+        client = RClicksClient(args.rclicks_python.resolve(), args.rclicks_root.resolve(),
+                               args.rclicks_checkpoint.resolve())
+        band = tuple(float(v) for v in args.rclicks_band.split(','))
+        make_clicker = lambda gt, image: RClicker(gt.astype(np.int32), image, client, band, args.seed)  # noqa: E731
     # Paths are resolved before build_predictor changes directory.
     imis_root, ckpt = args.imis_root.resolve(), args.checkpoint.resolve()
     data, out = args.data.resolve(), args.per_image.resolve()
@@ -176,7 +190,7 @@ def main():
     t0, curves = time.time(), {}
     with torch.no_grad():
         for n, (name, image, gt) in enumerate(evals, 1):
-            curves[name] = click_curve(predictor, image, gt, args.max_clicks)
+            curves[name] = click_curve(predictor, image, gt, args.max_clicks, make_clicker)
             if n % 50 == 0 or n == len(evals):
                 c = np.array(list(curves.values()))
                 noc90 = np.mean([np.argmax(r >= 0.9) + 1 if (r >= 0.9).any() else args.max_clicks
@@ -188,7 +202,9 @@ def main():
     out.write_text(json.dumps({
         'model': 'imis', 'stage': 'baseline', 'adapter': None,
         'checkpoint': str(ckpt), 'data': str(data), 'eval_split': args.eval_split,
-        'seed': 0, 'max_clicks': args.max_clicks, 'curves': curves}, indent=1))
+        'seed': args.seed, 'max_clicks': args.max_clicks, 'clicker': args.clicker,
+        'rclicks_band': args.rclicks_band if args.clicker == 'rclicks' else None,
+        'curves': curves}, indent=1))
     print(f'  per-image curves -> {out}')
 
 

@@ -68,3 +68,40 @@ No IMIS-Bench code is included here. `tools/imis_benchmark.py` imports it
 from a separate, unmodified clone at run time. The IMIS-Net checkpoint is the
 authors' upload at `https://huggingface.co/1Junlong/IMIS-Net` (revision
 `c3d2edd`, Apache License 2.0), downloaded separately.
+
+## RClicks (Realistic Click Simulation for Benchmarking Interactive Segmentation)
+
+- Source: `https://github.com/emb-ai/rclicks` (commit `e20bf76`)
+- Licence: MIT, Copyright (c) 2024 embodied-ai-star
+- Paper: Antonov A., Moskalenko A., Shepelev D., Krapukhin A., Soshin K.,
+  Konushin A., Shakhuro V., NeurIPS 2024, arXiv:2410.11722
+
+Adapted: the click-sampling step of `isegm/inference/clicker.py`
+(`Clicker._get_next_click` with a click model) in `RClicker._get_next_click`,
+`tools/rclicks_clicker.py`. The clickability network itself is imported
+unmodified from a separate clone by `tools/rclicks_worker.py`; its checkpoint
+(`clickability_model.pth`) is downloaded separately and not distributed here.
+
+```
+MIT License
+
+Copyright (c) 2024 embodied-ai-star
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

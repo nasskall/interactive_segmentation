@@ -111,13 +111,16 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
 
 CLICK_TIMES: list[float] = []   # seconds per click, image encoding excluded
 LAST_CURVES: dict[str, list[float]] = {}   # object name -> IoU after each click, last evaluate()
+# Builds the simulated user for one object: (gt, image) -> Clicker. The robot
+# by default; --clicker rclicks swaps in realistic clicks (tools/rclicks_clicker.py).
+MAKE_CLICKER = lambda gt, image: Clicker(gt_mask=gt.astype(np.int32))   # noqa: E731
 
 
 def click_until(ctrl: InteractiveController, image, gt, max_clicks: int,
                 stop_iou: float | None) -> list[float]:
-    """Robot-click one object; IoU after each click."""
+    """Click one object with the simulated user; IoU after each click."""
     ctrl.set_image(image)
-    robot = Clicker(gt_mask=gt.astype(np.int32))
+    robot = MAKE_CLICKER(gt, image)
     pred = np.zeros_like(gt)
     ious = []
     for _ in range(max_clicks):
@@ -176,7 +179,9 @@ def save_curves(args, name: str, stage: str):
     args.per_image.write_text(json.dumps({
         'model': name, 'stage': stage, 'adapter': str(args.adapter) if args.adapter else None,
         'data': str(args.data), 'eval_split': args.eval_split, 'seed': args.seed,
-        'max_clicks': args.max_clicks, 'curves': LAST_CURVES}, indent=1))
+        'max_clicks': args.max_clicks, 'clicker': args.clicker,
+        'rclicks_band': args.rclicks_band if args.clicker == 'rclicks' else None,
+        'curves': LAST_CURVES}, indent=1))
     print(f'  per-image curves -> {args.per_image}')
 
 
@@ -218,10 +223,24 @@ def main():
                     help='score the eval objects once and stop (no session, no adaptation)')
     ap.add_argument('--per-image', type=Path, default=None,
                     help='write every eval object\'s IoU curve to this JSON (tools/paper_stats.py reads it)')
+    ap.add_argument('--clicker', choices=['robot', 'rclicks'], default='robot',
+                    help='simulated user: centre of the largest error, or RClicks realistic clicks')
+    ap.add_argument('--rclicks-band', default='0,1',
+                    help='RClicks probability-mass band to sample from, e.g. 0.9,1 (most likely 10%%), 0,0.1 (least likely)')
+    ap.add_argument('--rclicks-python', type=Path, default=ROOT.parent / 'external' / 'rclicks-venv' / 'bin' / 'python')
+    ap.add_argument('--rclicks-root', type=Path, default=ROOT.parent / 'external' / 'rclicks')
+    ap.add_argument('--rclicks-checkpoint', type=Path,
+                    default=ROOT.parent / 'external' / 'rclicks' / 'ckpt' / 'clickability_model.pth')
     args = ap.parse_args()
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    if args.clicker == 'rclicks':
+        global MAKE_CLICKER
+        from rclicks_clicker import RClicker, RClicksClient
+        client = RClicksClient(args.rclicks_python, args.rclicks_root, args.rclicks_checkpoint)
+        band = tuple(float(v) for v in args.rclicks_band.split(','))
+        MAKE_CLICKER = lambda gt, image: RClicker(gt.astype(np.int32), image, client, band, args.seed)  # noqa: E731
 
     if (args.data / 'manifest.json').exists():
         # Fixed split; --n-train/--n-eval only cap it, --category is ignored.
