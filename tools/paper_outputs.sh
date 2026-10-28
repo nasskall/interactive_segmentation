@@ -69,7 +69,7 @@ for set in isic clean; do
     --summary "RClicks (0, 0.1)=$RES/$set/summary_rc0-0.1.json::noc@90" --metrics iou \
     --rows "sam=SAM" "sam2=SAM 2" "simpleclick=SimpleClick" "medsam=MedSAM" "imis=IMIS-Net" \
            "accepted=Student (accepted)" "gt=Student (expert)" \
-    --caption "Robustness on the ${NAME[$set]} test set: IoU for a single tight or jittered box (each side shifted by up to 10\% of its size) and NoC@90 for realistic clicks sampled from the whole clickability distribution or its least likely tenth, with 95\% bootstrap confidence intervals below each value." \
+    --caption "Robustness on the ${NAME[$set]} test set: IoU for a tight or jittered box and NoC@90 for realistic clicks from the whole clickability distribution or its least likely tenth; 95\% intervals below each value." \
     --label "tab:robust_$set" --out "$OUT/robust_$set.tex"
 done
 
@@ -78,5 +78,5 @@ $T curves --panels "ISIC 2018=$RES/isic" "Challenge-disjoint=$RES/clean" \
            "SimpleClick=base_simpleclick.json" "IMIS-Net=base_imis.json" \
            "Student (teacher)=teacher_s*.json" "Student (accepted)=accepted_s*.json" \
            "Student (expert)=gt_s*.json" \
-  --out "$OUT/curves.pdf"
+  --height 1.8 --out "$OUT/curves.pdf"
 echo "tables and figure -> $OUT"
