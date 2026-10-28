@@ -189,6 +189,9 @@ def main():
     ap.add_argument('--adapt', action='store_true',
                     help='ensemble: adapt the members instead of comparing fusions')
     ap.add_argument('--data', type=Path, default=ROOT / 'datasets' / 'coco128-seg')
+    ap.add_argument('--session-data', type=Path, default=None,
+                    help="take the session objects from this benchmark's session split instead "
+                         '(e.g. adapt on ISIC 2018, score on a test-only set)')
     ap.add_argument('--category', type=int, default=0, help='COCO class index (0 = person)')
     ap.add_argument('--min-area', type=float, default=0.03)
     ap.add_argument('--n-train', type=int, default=None,
@@ -223,7 +226,10 @@ def main():
     if (args.data / 'manifest.json').exists():
         # Fixed split; --n-train/--n-eval only cap it, --category is ignored.
         splits = load_manifest(args.data)
-        train = splits['session'][:args.n_train]
+        train = (load_manifest(args.session_data) if args.session_data else splits).get(
+            'session', [])[:args.n_train]
+        if not train and not args.no_adapt and args.model != 'ensemble':
+            sys.exit(f'No session split to adapt on; pass --no-adapt or --session-data')
         evals = splits[args.eval_split][:args.n_eval]
         source = f'{args.data.name} {args.eval_split}'
     else:
