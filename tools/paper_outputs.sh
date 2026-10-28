@@ -79,4 +79,10 @@ $T curves --panels "ISIC 2018=$RES/isic" "Challenge-disjoint=$RES/clean" \
            "Student (teacher)=teacher_s*.json" "Student (accepted)=accepted_s*.json" \
            "Student (expert)=gt_s*.json" \
   --height 1.8 --out "$OUT/curves.pdf"
-echo "tables and figure -> $OUT"
+
+# Numbers quoted in the text: the \res{key} placeholders, keys in the draft's numbers.txt.
+KEYS=${KEYS:-$OUT/../numbers.txt}
+if [ -f "$KEYS" ]; then
+  $PY tools/paper_numbers.py --keys "$KEYS" --results "$RES" --out "$OUT/numbers.tex" --tex "$(dirname "$KEYS")"
+fi
+echo "tables, figure and numbers -> $OUT"
