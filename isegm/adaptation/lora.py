@@ -56,8 +56,11 @@ class LoRALinear(nn.Module):
         self.rank = rank
         self.scale = alpha / rank
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.lora_A = nn.Parameter(torch.zeros(rank, base.in_features))
-        self.lora_B = nn.Parameter(torch.zeros(base.out_features, rank))
+        # Create the adapter on the base layer's device and dtype: the model is
+        # often on the GPU already when the adapter is attached.
+        factory = {'device': base.weight.device, 'dtype': base.weight.dtype}
+        self.lora_A = nn.Parameter(torch.zeros(rank, base.in_features, **factory))
+        self.lora_B = nn.Parameter(torch.zeros(base.out_features, rank, **factory))
         nn.init.kaiming_uniform_(self.lora_A, a=5 ** 0.5)
         # B starts at zero so the adapter is the identity at init.
 
@@ -108,6 +111,9 @@ class LoRAConv2d(nn.Module):
             bias=False,
             groups=1,
         )
+        # Same device and dtype as the base conv (see LoRALinear).
+        self.lora_down.to(base.weight.device, base.weight.dtype)
+        self.lora_up.to(base.weight.device, base.weight.dtype)
         nn.init.kaiming_uniform_(self.lora_down.weight, a=5 ** 0.5)
         nn.init.zeros_(self.lora_up.weight)
 

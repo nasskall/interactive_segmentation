@@ -80,7 +80,8 @@ def _target(t: np.ndarray, size: int) -> np.ndarray:
 @torch.no_grad()
 def predict(model, image: np.ndarray, device, size: int = INPUT_SIZE) -> np.ndarray:
     """Probability of every class at ``image``'s size, (n_classes, H, W)."""
-    model.eval()
+    # Move the model too: a model loaded from a file is on the CPU.
+    model.to(device).eval()
     h, w = image.shape[:2]
     logits = model(_normalise(_resized(image, size))[None].to(device))
     return torch.sigmoid(F.interpolate(logits, size=(h, w), mode='bilinear',

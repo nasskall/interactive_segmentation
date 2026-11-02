@@ -23,6 +23,9 @@ USER = {'id': 1, 'username': 'admin'}
 
 @pytest.fixture
 def runner(tmp_path, monkeypatch):
+    # Run inside a Slurm job (e.g. srun pytest), the worker would report that
+    # job's id; these tests start the worker directly.
+    monkeypatch.delenv('SLURM_JOB_ID', raising=False)
     # The worker imports the stubs from this folder.
     monkeypatch.setenv('PYTHONPATH', os.pathsep.join(filter(None, [str(TESTS),
                                                                      os.environ.get('PYTHONPATH')])))
