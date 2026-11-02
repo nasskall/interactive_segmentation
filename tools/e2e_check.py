@@ -946,9 +946,16 @@ class E2E:
 
         with r.check('Models tab: kinds, counts and prerequisites'):
             goto(r, f'/projects/{self.projects["A"]}/models')
-            for kind in ('Interactive', 'Automatic', 'Student'):
+            for kind in ('Interactive', 'Automatic'):
                 button(p, kind).click()
                 no_error(p)
+                expect(button(p, 'Train')).to_be_enabled()
+            # A student needs a finished automatic model first: the tab says so
+            # in red and keeps Train disabled.
+            button(p, 'Student').click()
+            expect(p.get_by_text('Needs a finished automatic SAM 2 model to learn from',
+                                 exact=False)).to_be_visible()
+            expect(button(p, 'Train')).to_be_disabled()
             button(p, 'Interactive').click()
             expect(p.get_by_text('labelled objects on', exact=False)).to_be_visible()
 
