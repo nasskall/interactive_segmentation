@@ -224,6 +224,31 @@ If the frontend changed (`frontend/` in the pull), make a new bundle on the PC
 training in progress; it shows as interrupted, so restart when the Models tab
 shows none running.
 
+### Check everything end to end
+
+`deploy/e2e_check.sh` goes through every screen and control in a real
+(headless) browser: accounts, projects of all five task types, classes,
+uploads, assignment, every labelling tool, quick segment with every model
+and ensemble, training of each kind on the GPU (and a cancel), auto-labelling,
+exports, settings and the audit log. It starts its own server instance on
+port 8021 with an empty data folder in `/tmp`, so live users and data are not
+touched. It needs Playwright, once, in its own environment:
+
+```bash
+python3 -m venv ~/iseg-e2e
+~/iseg-e2e/bin/pip install playwright
+~/iseg-e2e/bin/python -m playwright install chromium
+```
+
+Then, from the app folder (about 30 minutes, most of it training):
+
+```bash
+deploy/e2e_check.sh                 # or --no-train to skip the GPU trainings
+```
+
+It prints PASS / FAIL / SKIP for each check and where the report is; each
+failure has a screenshot next to the report.
+
 ### Where the logs are
 
 | What | Where |

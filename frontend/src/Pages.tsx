@@ -37,7 +37,6 @@ export function Login({ onSignedIn }: { onSignedIn: (u: User) => void }) {
                             onChange={(e) => setPassword(e.target.value)} /></label>
       {error && <p className="error-text">{error}</p>}
       <button className="primary" disabled={busy || !username || !password}>Sign in</button>
-      <p className="meta">Or use <a href={href.quick()}>Quick segment</a> without an account.</p>
     </form>
   );
 }
