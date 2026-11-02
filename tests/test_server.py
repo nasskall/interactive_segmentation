@@ -39,6 +39,19 @@ def test_models_listing(client):
     assert info['current']['model_type'] == 'RITM'
     assert 'best_checkpoint_068.pth' in info['checkpoints']
     assert 'SAM2 - Tiny' in info['model_types']
+    assert set(info['checkpoint_types']) == set(info['checkpoints'])
+    assert info['checkpoint_types']['best_checkpoint_068.pth'] == 'RITM'
+
+
+def test_load_refuses_a_checkpoint_of_another_model(client):
+    # The model picker used to send any type with any checkpoint; building
+    # SAM 2 from RITM weights then failed with a 500.
+    r = client.post('/api/models/load',
+                    json={'model_type': 'SAM2 - Tiny', 'checkpoint': 'best_checkpoint_068.pth'})
+    assert r.status_code == 400
+    assert r.json()['detail'] == ('best_checkpoint_068.pth is not a SAM2 - Tiny checkpoint '
+                                  '(its name says RITM)')
+    assert client.get('/api/models').json()['current']['model_type'] == 'RITM'
 
 
 def test_click_undo_finish_flow(client):
@@ -102,7 +115,8 @@ def test_errors(client):
     assert client.get(f'/api/sessions/{sid}').status_code == 404
 
 
-def test_failed_load_keeps_previous_model(client, monkeypatch):
+def test_failed_load_keeps_previous_model(fresh_ritm, device, ritm_checkpoint_path, tmp_path,
+                                         monkeypatch):
     # Reproduces SAM being picked while segment_anything is missing: the
     # checkpoint loads, but building its predictor raises.
     from isegm.inference import utils
@@ -113,10 +127,17 @@ def test_failed_load_keeps_previous_model(client, monkeypatch):
 
     monkeypatch.setattr(utils, 'load_model_by_type', lambda *a, **k: FakeSam())
     monkeypatch.setattr(sam_predictor, 'SAM_AVAILABLE', False)
+    # A checkpoint whose name says SAM ViT-B; the fake loader never reads it.
+    weights = tmp_path / 'weights'
+    weights.mkdir()
+    (weights / ritm_checkpoint_path.name).symlink_to(ritm_checkpoint_path)
+    (weights / 'sam_vit_b_test.pth').write_bytes(b'')
+    client = TestClient(create_app(ModelManager(fresh_ritm, device, 'RITM',
+                                                ritm_checkpoint_path.name, weights)))
 
     sid = _upload(client)['session_id']
     r = client.post('/api/models/load',
-                    json={'model_type': 'SAM - ViT-B', 'checkpoint': 'best_checkpoint_068.pth'})
+                    json={'model_type': 'SAM - ViT-B', 'checkpoint': 'sam_vit_b_test.pth'})
     assert r.status_code == 500
     assert 'segment_anything is not installed' in r.json()['detail']
     assert client.get('/api/models').json()['current']['model_type'] == 'RITM'

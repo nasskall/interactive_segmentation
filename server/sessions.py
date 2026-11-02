@@ -301,6 +301,9 @@ class ModelManager:
         return {
             'model_types': MODEL_TYPES,
             'checkpoints': checkpoints,
+            # The model type each checkpoint's file name says it is (null when
+            # it says none): the only type it can be loaded as.
+            'checkpoint_types': {c: guess_model_type(c) for c in checkpoints},
             'current': current,
             'device': self.device,
             'ensemble': {
@@ -318,6 +321,13 @@ class ModelManager:
         # Only files directly inside weights_dir; no path traversal.
         if os.path.basename(checkpoint) != checkpoint or checkpoint not in self.list_checkpoints():
             raise ValueError(f'Unknown checkpoint {checkpoint!r}')
+        # A checkpoint only loads as the model it was trained for; the file
+        # name says which (guess_model_type), so refuse any other pairing
+        # here rather than fail half-way through building the network.
+        expected = guess_model_type(checkpoint)
+        if expected != model_label:
+            says = f'its name says {expected}' if expected else 'its name matches no model type'
+            raise ValueError(f'{checkpoint} is not a {model_label} checkpoint ({says})')
 
     def _get_net(self, model_label: str, checkpoint: str):
         key = (model_label, checkpoint)

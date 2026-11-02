@@ -37,6 +37,8 @@ export interface ModelRef {
 export interface ModelInfo {
   model_types: string[];
   checkpoints: string[];
+  /** The one model type each checkpoint loads as (null: its name says none). */
+  checkpoint_types: Record<string, string | null>;
   current: {
     model_type: string;
     checkpoint: string | null;
