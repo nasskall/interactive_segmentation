@@ -227,14 +227,17 @@ images, and *Mark done & next* jumps to the next unfinished one.
   worker's device (default: the first GPU it sees, else the CPU).
 
 On first start with an empty `data/`, the server prints a one-time setup
-token. Create the first admin with it via `POST /api/auth/setup`; every other
-call needs the `Authorization: Bearer <token>` header returned by setup or
-`POST /api/auth/login`.
+token. Create the first admin with it via `POST /api/auth/setup`. Sign-in has
+two steps: the password (`POST /api/auth/setup` or `/api/auth/login`) returns
+a short-lived ticket, and a code from an authenticator app turns it into a
+session (`POST /api/auth/2fa/enrol` and `/api/auth/2fa/activate` the first
+time, `POST /api/auth/login/verify` after that). Every other call needs the
+`Authorization: Bearer <token>` header that last step returns.
 
 ### Security and compliance
 
 The platform supports running under ISO/IEC 27001 and ISO/IEC 42001. It has
-sign-in on every endpoint, role-based access, sign-in throttling, a
+two-step sign-in on every endpoint, role-based access, sign-in throttling, a
 hash-chained audit log (admin page *Audit log*), HTTPS, and security headers.
 Every assisted annotation records the model and checkpoint SHA-256 that
 proposed it, and exports carry this. [docs/compliance/](docs/compliance/README.md)

@@ -187,8 +187,14 @@ journalctl -u iseg-api --no-pager | grep -A1 'setup token' | tail -1
 
 Open `https://192.168.25.110/iseg/`. The browser warns about the certificate
 (self-signed, and its names don't include `192.168.25.110`); continue. Enter
-the setup token, a username and a password of 12 or more characters. Then add
-the other accounts on the **Users** page.
+the setup token, a username and a password of 12 or more characters.
+
+Every account then sets up two-step sign-in: scan the QR code with an
+authenticator app (Google or Microsoft Authenticator, Aegis, 2FAS, ...), type
+the 6-digit code it shows, and save the 10 recovery codes the page shows once.
+From then on, signing in needs the password and a code from the app. Add the
+other accounts on the **Users** page; each does the same at their first
+sign-in.
 
 ## Step 8: Check it end to end
 
@@ -274,11 +280,32 @@ tar -czf ~/backups/iseg-files-$(date +%F).tar.gz data/items data/models
 The database copy is consistent while the app runs. The images may be health
 data: keep backups as private as the server.
 
+`data/totp.key` encrypts every account's authenticator key in the database;
+the commands above leave it out on purpose, so a backup alone cannot be used
+to make sign-in codes. Keep one copy of it apart from the backups (for
+example on the admin's own encrypted storage). Without it, a restored
+database still works, but every account must set up two-step sign-in again
+(`tools/reset_2fa.py` below, once per account).
+
 ### A forgotten admin password
 
 ```bash
 cd ~/ai_apps/interactive_segmentation
 .venv/bin/python tools/reset_password.py <username>
+```
+
+### A lost phone
+
+Someone who lost their phone signs in with one of their recovery codes and
+then sets the app up again from a new phone after a reset (below), or makes
+new recovery codes on their **Account** page (click their name, top right)
+if they still have the app. Someone who has lost both the app and the codes
+needs a reset from the server console; they set up the app again at their
+next sign-in:
+
+```bash
+cd ~/ai_apps/interactive_segmentation
+.venv/bin/python tools/reset_2fa.py <username>
 ```
 
 ### Remove it

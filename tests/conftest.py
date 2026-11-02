@@ -190,3 +190,26 @@ def tk_root():
         root.destroy()
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Second sign-in factor
+# ---------------------------------------------------------------------------
+
+class TotpClock:
+    """Stands in for time.time in server.labelling.totp; ``next_code`` moves
+    it on one 30-second step so every sign-in gets a fresh, valid code."""
+
+    def __init__(self, t: float = 1_700_000_000.0):
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+@pytest.fixture(autouse=True)
+def totp_clock(monkeypatch):
+    from server.labelling import totp
+    clock = TotpClock()
+    monkeypatch.setattr(totp, 'clock', clock)
+    return clock

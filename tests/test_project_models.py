@@ -18,7 +18,8 @@ from server.app import create_app  # noqa: E402
 from server.labelling import geometry, training  # noqa: E402
 from server.labelling.db import Database, now  # noqa: E402
 from server.sessions import ModelManager  # noqa: E402
-from test_labelling import PASSWORD, Api, _class, _items, _png, _project  # noqa: E402
+from test_labelling import (PASSWORD, Api, _class, _items, _png, _project,  # noqa: E402
+                            finish_sign_in)
 
 SAM2_CKPT = 'sam2.1_hiera_tiny.pt'
 
@@ -42,8 +43,8 @@ def admin(client):
     token = client.app.state.labelling.setup_token
     r = client.post('/api/auth/setup', json={'setup_token': token, 'username': 'admin',
                                              'password': PASSWORD, 'display_name': 'Admin'})
-    assert r.status_code == 201, r.text
-    return Api(client, r.json()['token'], r.json()['user'])
+    done = finish_sign_in(client, r)
+    return Api(client, done['token'], done['user'])
 
 
 def _ctx(admin: Api):

@@ -1,4 +1,5 @@
-"""Labeller accounts: password hashing, bearer tokens and sign-in throttling.
+"""Labeller accounts: password hashing, bearer tokens, the ticket between the
+password and the second factor (totp.py), and sign-in throttling.
 
 Passwords are hashed with scrypt from the standard library. Login returns a
 random token; only its SHA-256 is stored, so the database alone cannot be
@@ -21,6 +22,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 TOKEN_LIFETIME = timedelta(hours=12)
+CHALLENGE_LIFETIME = timedelta(minutes=5)   # password accepted, second factor pending
+MAX_CHALLENGE_ATTEMPTS = 5
 MIN_PASSWORD_LENGTH = 12
 MAX_FAILURES = 5
 WINDOW = 15 * 60      # seconds
@@ -69,6 +72,45 @@ def user_for_token(conn: sqlite3.Connection, token: str) -> Optional[sqlite3.Row
         'WHERE t.token_hash = ? AND t.expires_at > ? AND u.active = 1',
         (_token_hash(token), datetime.now(timezone.utc).isoformat()),
     ).fetchone()
+
+
+def issue_challenge(conn: sqlite3.Connection, user_id: int, kind: str) -> str:
+    """A short-lived ticket for the second sign-in step, after the password.
+    Like tokens, only its hash is stored. ``kind`` is 'code' or 'enrol'."""
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    conn.execute('DELETE FROM login_challenges WHERE expires_at < ? OR user_id = ?',
+                 (now.isoformat(), user_id))
+    conn.execute('INSERT INTO login_challenges (token_hash, user_id, kind, expires_at) '
+                 'VALUES (?, ?, ?, ?)',
+                 (_token_hash(token), user_id, kind, (now + CHALLENGE_LIFETIME).isoformat()))
+    return token
+
+
+def find_challenge(conn: sqlite3.Connection, token: str, kind: str) -> Optional[sqlite3.Row]:
+    """The pending sign-in for ``token`` and its (active) user, if still valid."""
+    return conn.execute(
+        'SELECT c.token_hash, c.pending_secret, c.attempts, u.* FROM login_challenges c '
+        'JOIN users u ON u.id = c.user_id '
+        'WHERE c.token_hash = ? AND c.kind = ? AND c.expires_at > ? AND u.active = 1',
+        (_token_hash(token), kind, datetime.now(timezone.utc).isoformat())).fetchone()
+
+
+def challenge_failed(conn: sqlite3.Connection, token: str) -> None:
+    """Count a wrong code; the ticket is void after MAX_CHALLENGE_ATTEMPTS."""
+    h = _token_hash(token)
+    conn.execute('UPDATE login_challenges SET attempts = attempts + 1 WHERE token_hash = ?', (h,))
+    conn.execute('DELETE FROM login_challenges WHERE token_hash = ? AND attempts >= ?',
+                 (h, MAX_CHALLENGE_ATTEMPTS))
+
+
+def drop_challenge(conn: sqlite3.Connection, token: str) -> None:
+    conn.execute('DELETE FROM login_challenges WHERE token_hash = ?', (_token_hash(token),))
+
+
+def set_pending_secret(conn: sqlite3.Connection, token: str, sealed: str) -> None:
+    conn.execute('UPDATE login_challenges SET pending_secret = ? WHERE token_hash = ?',
+                 (sealed, _token_hash(token)))
 
 
 class LoginThrottle:

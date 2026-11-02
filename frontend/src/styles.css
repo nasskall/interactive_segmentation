@@ -362,3 +362,15 @@ table.users .actions { display: flex; gap: 6px; justify-content: flex-end; flex-
 .formats input { margin-top: 3px; }
 
 .members { display: flex; flex-direction: column; gap: 4px; }
+
+/* ── two-step sign-in ───────────────────────────────────────────────────── */
+.auth ol.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+.auth .qr img { display: block; margin: 8px 0; background: #fff; border-radius: 6px; }
+code.secret { font-size: 14px; letter-spacing: 0.04em; word-spacing: 0.3em; }   /* wraps between groups */
+ul.recovery-codes { list-style: none; padding: 0; margin: 0; display: grid;
+                    grid-template-columns: repeat(2, 1fr); gap: 4px 16px; }
+ul.recovery-codes code { font-size: 15px; letter-spacing: 0.05em; }
+button.link { background: none; border: none; padding: 0; color: var(--accent, #2563eb);
+              text-decoration: underline; cursor: pointer; font: inherit; align-self: flex-start; }
+.user a { color: inherit; }
+.user a.active { text-decoration: underline; }

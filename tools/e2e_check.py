@@ -23,7 +23,10 @@ repository.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
+import hashlib
+import hmac
 import io
 import json
 import random
@@ -87,6 +90,32 @@ def make_image(seed: int, n_blobs: int, shift: int = 0) -> tuple[bytes, list[tup
             row += bytes(max(0, min(255, int(c * shade) + n + (x + y) // 40)) for c in base)
         rows.append(bytes(row))
     return _png(W, H, rows), blobs
+
+
+# ---------------------------------------------------------------------------
+# An authenticator app (RFC 6238), so the check can pass two-step sign-in
+# ---------------------------------------------------------------------------
+
+class Authenticator:
+    """Keeps each account's key, read from the setup page, and gives a code
+    for a 30-second step not used before (the server refuses replays)."""
+
+    def __init__(self):
+        self.keys: dict[str, bytes] = {}
+        self.last_step: dict[str, int] = {}
+
+    def add(self, user: str, secret_text: str):
+        b32 = secret_text.replace(' ', '').strip()
+        self.keys[user] = base64.b32decode(b32 + '=' * (-len(b32) % 8))
+
+    def code(self, user: str) -> str:
+        while int(time.time() // 30) <= self.last_step.get(user, -1):
+            time.sleep(1)
+        step = int(time.time() // 30)
+        self.last_step[user] = step
+        mac = hmac.new(self.keys[user], struct.pack('>Q', step), hashlib.sha1).digest()
+        o = mac[-1] & 0x0F
+        return str((struct.unpack('>I', mac[o:o + 4])[0] & 0x7FFFFFFF) % 10 ** 6).zfill(6)
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +288,42 @@ class E2E:
         self.files.mkdir(exist_ok=True)
         self.projects: dict[str, int] = {}
         self.users: dict[str, int] = {}
+        self.auth = Authenticator()
+        self.recovery: dict[str, list[str]] = {}
+
+    # ── two-step sign-in ──────────────────────────────────────────────────
+    def second_step(self, page: Page, user: str, display: str):
+        """Finish a sign-in after the password: set up the authenticator the
+        first time (keeping its key and the recovery codes), else give a code."""
+        heading = page.get_by_role('heading', name='Set up two-step sign-in').or_(
+            page.get_by_role('heading', name='Two-step sign-in'))
+        expect(heading).to_be_visible(timeout=UI_TIMEOUT)
+        if page.get_by_role('heading', name='Set up two-step sign-in').count():
+            expect(page.get_by_alt_text('QR code for the authenticator app')).to_be_visible(
+                timeout=UI_TIMEOUT)
+            page.get_by_text("Can't scan it?").click()
+            self.auth.add(user, page.locator('code.secret').inner_text())
+            page.get_by_label('Code').fill(self.auth.code(user))
+            button(page, 'Turn on and sign in').click()
+            expect(page.get_by_role('heading', name='Save your recovery codes')).to_be_visible(
+                timeout=UI_TIMEOUT)
+            codes = page.locator('ul.recovery-codes code').all_inner_texts()
+            assert len(set(codes)) == 10, codes
+            self.recovery[user] = codes
+            expect(button(page, 'Continue')).to_be_disabled()
+            page.get_by_label('I have saved these codes somewhere safe').check()
+            button(page, 'Continue').click()
+        else:
+            page.get_by_label('Code').fill(self.auth.code(user))
+            button(page, 'Sign in').click()
+        expect(page.get_by_text(f'{display} (', exact=False).first).to_be_visible(timeout=UI_TIMEOUT)
+
+    def sign_in(self, page: Page, user: str, password: str, display: str):
+        expect(page.get_by_role('heading', name='Sign in')).to_be_visible(timeout=UI_TIMEOUT)
+        page.get_by_label('Username').fill(user)
+        page.get_by_label('Password').fill(password)
+        button(page, 'Sign in').click()
+        self.second_step(page, user, display)
 
     # ── data ──────────────────────────────────────────────────────────────
     def write_images(self, prefix: str, n: int, blobs=2, seed0=0, shift=0) -> list[Path]:
@@ -291,12 +356,26 @@ class E2E:
             expect(button(p, 'Create admin')).to_be_disabled()
             p.get_by_label('Password').fill(PASSWORD)
             button(p, 'Create admin').click()
-            expect(p.get_by_text('E2E Admin (admin)')).to_be_visible(timeout=UI_TIMEOUT)
+
+        with r.check('Two-step sign-in: setup with QR code, wrong code refused, recovery codes'):
+            expect(p.get_by_role('heading', name='Set up two-step sign-in')).to_be_visible(
+                timeout=UI_TIMEOUT)
+            expect(p.get_by_alt_text('QR code for the authenticator app')).to_be_visible(
+                timeout=UI_TIMEOUT)
+            p.get_by_label('Code').fill('000000')
+            button(p, 'Turn on and sign in').click()
+            expect(p.get_by_text('Wrong code')).to_be_visible(timeout=UI_TIMEOUT)
+            self.second_step(p, 'e2e_admin', 'E2E Admin')
             expect(p.get_by_text('No projects yet')).to_be_visible()
             r.refresh_token()
             assert r.api('GET', '/auth/status')['needs_setup'] is False
+            assert r.api('GET', '/auth/me')['two_factor'] is True
 
-        with r.check('Sign out, wrong password is refused, sign in again'):
+        with r.check('Account page: two-step sign-in on, 10 recovery codes left'):
+            goto(r, '/account')
+            expect(p.get_by_text('10 of 10 recovery codes left')).to_be_visible(timeout=UI_TIMEOUT)
+
+        with r.check('Sign out, wrong password is refused, sign in with password and code'):
             button(p, 'Sign out').click()
             expect(p.get_by_role('heading', name='Sign in')).to_be_visible(timeout=UI_TIMEOUT)
             p.get_by_label('Username').fill('e2e_admin')
@@ -305,8 +384,49 @@ class E2E:
             expect(p.locator('.error-text')).to_be_visible(timeout=UI_TIMEOUT)
             p.get_by_label('Password').fill(PASSWORD)
             button(p, 'Sign in').click()
-            expect(p.get_by_text('E2E Admin (admin)')).to_be_visible(timeout=UI_TIMEOUT)
+            self.second_step(p, 'e2e_admin', 'E2E Admin')
             r.refresh_token()
+
+        with r.check('Sign in with a recovery code; it works only once'):
+            button(p, 'Sign out').click()
+            code = self.recovery['e2e_admin'][0]
+            for attempt in (1, 2):
+                p.get_by_label('Username').fill('e2e_admin')
+                p.get_by_label('Password').fill(PASSWORD)
+                button(p, 'Sign in').click()
+                button(p, 'Lost your phone? Use a recovery code').click()
+                p.get_by_label('Recovery code').fill(code)
+                button(p, 'Sign in').click()
+                if attempt == 1:
+                    expect(p.get_by_text('9 recovery codes left')).to_be_visible(timeout=UI_TIMEOUT)
+                    button(p, 'Continue').click()
+                    expect(p.get_by_text('E2E Admin (', exact=False).first).to_be_visible()
+                    button(p, 'Sign out').click()
+                else:
+                    expect(p.get_by_text('Wrong code')).to_be_visible(timeout=UI_TIMEOUT)
+                    button(p, 'Start again').first.click()
+            self.sign_in(p, 'e2e_admin', PASSWORD, 'E2E Admin')
+            r.refresh_token()
+
+        with r.check('Account page: new recovery codes need an app code'):
+            p.get_by_title('Account and two-step sign-in').click()
+            expect(p.get_by_text('9 of 10 recovery codes left')).to_be_visible(timeout=UI_TIMEOUT)
+            p.get_by_label('Code').fill('000000')
+            button(p, 'Make new recovery codes').click()
+            expect(p.get_by_text('Wrong code')).to_be_visible(timeout=UI_TIMEOUT)
+            expect(p.get_by_text('E2E Admin (', exact=False).first).to_be_visible()   # still signed in
+            p.get_by_label('Code').fill(self.auth.code('e2e_admin'))
+            button(p, 'Make new recovery codes').click()
+            expect(p.get_by_text('Your new recovery codes.')).to_be_visible(timeout=UI_TIMEOUT)
+            new = p.locator('ul.recovery-codes code').all_inner_texts()
+            assert len(set(new)) == 10 and not set(new) & set(self.recovery['e2e_admin'])
+            with p.expect_download() as dl:
+                button(p, 'Download as a text file').click()
+            text = Path(dl.value.path()).read_text()
+            assert all(c in text for c in new), text
+            self.recovery['e2e_admin'] = new
+            button(p, 'Done').click()
+            expect(p.get_by_text('10 of 10 recovery codes left')).to_be_visible(timeout=UI_TIMEOUT)
 
     def users_page(self):
         p, r = self.page, self.run
@@ -1081,7 +1201,7 @@ class E2E:
             self.open_item(it['id'])
             expect(p.get_by_title('Box (R)')).to_have_class('active')
             drag_canvas(p, ANNOT, cx - ax, cy - ay, cx + ax, cy + ay)
-            expect(p.get_by_text('box ', exact=False).first).to_be_visible(timeout=UI_TIMEOUT)
+            expect(p.get_by_text('Annotations (1)')).to_be_visible(timeout=UI_TIMEOUT)
             assert len(self.anns(it['id'])) == 1
         with r.check('Workspace: fixed-size box (click to place)'):
             p.get_by_label('Fixed size (click to place)').check()
@@ -1231,9 +1351,7 @@ class E2E:
         try:
             with r.check('Labeller: signs in, sees only the assigned project'):
                 lp.goto(f'{r.base}/')
-                lp.get_by_label('Username').fill('e2e_lab')
-                lp.get_by_label('Password').fill(LAB_PASSWORD)
-                button(lp, 'Sign in').click()
+                self.sign_in(lp, 'e2e_lab', LAB_PASSWORD, 'E2E Labeller')
                 expect(lp.get_by_text('E2E Labeller (labeller)')).to_be_visible(timeout=UI_TIMEOUT)
                 r.refresh_token()
                 expect(lp.get_by_role('link', name='Users')).to_have_count(0)

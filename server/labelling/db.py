@@ -40,7 +40,28 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role          TEXT NOT NULL CHECK (role IN {ROLES}),
     active        INTEGER NOT NULL DEFAULT 1,
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    totp_secret    TEXT,              -- authenticator key, encrypted (totp.SecretBox)
+    totp_last_step INTEGER            -- 30-s step of the last code used; no replays
+);
+
+-- One-time codes for signing in without the authenticator app.
+CREATE TABLE IF NOT EXISTS recovery_codes (
+    id        INTEGER PRIMARY KEY,
+    user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL,
+    used_at   TEXT
+);
+
+-- A sign-in between the password and the second factor: 'code' asks for a
+-- code, 'enrol' for setting up the authenticator (pending_secret, encrypted).
+CREATE TABLE IF NOT EXISTS login_challenges (
+    token_hash     TEXT PRIMARY KEY,
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind           TEXT NOT NULL CHECK (kind IN ('code', 'enrol')),
+    pending_secret TEXT,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    expires_at     TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS tokens (
@@ -152,6 +173,13 @@ class Database:
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
         """Bring databases created by earlier versions up to SCHEMA."""
+        cols = {r['name'] for r in conn.execute('PRAGMA table_info(users)')}
+        if 'totp_secret' not in cols:
+            conn.execute('ALTER TABLE users ADD COLUMN totp_secret TEXT')
+            conn.execute('ALTER TABLE users ADD COLUMN totp_last_step INTEGER')
+            # Sign everyone out: sessions from before the second factor existed
+            # must not outlive it.
+            conn.execute('DELETE FROM tokens')
         cols = {r['name'] for r in conn.execute('PRAGMA table_info(annotations)')}
         if 'model' not in cols:
             conn.execute('ALTER TABLE annotations ADD COLUMN model TEXT')

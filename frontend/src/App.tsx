@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
-import { api, hasToken, setToken, setUnauthorizedHandler, type User } from './api';
+import { api, hasToken, setToken, setUnauthorizedHandler, type LoginStep, type User } from './api';
 import { href, useRoute } from './lib';
 import { AuditPage, UsersPage } from './Admin';
 import { Login, ProjectPage, Projects, Setup } from './Pages';
 import QuickSegment from './QuickSegment';
+import { AccountPage, SecondFactor } from './TwoFactor';
 import Workspace from './Workspace';
 
 type Auth = { state: 'loading' } | { state: 'setup' } | { state: 'signed-out' }
-  | { state: 'signed-in'; user: User };
+  | { state: 'second-step'; step: LoginStep } | { state: 'signed-in'; user: User };
 
 export default function App() {
   const route = useRoute();
@@ -32,6 +33,7 @@ export default function App() {
   }, []);
 
   const signedIn = (user: User) => setAuth({ state: 'signed-in', user });
+  const secondStep = (step: LoginStep) => setAuth({ state: 'second-step', step });
   const signOut = async () => {
     await api.logout().catch(() => {});
     setToken(null);
@@ -42,8 +44,12 @@ export default function App() {
   let body;
   if (error) body = <div className="page"><p className="error-text">{error}</p></div>;
   else if (auth.state === 'loading') body = <div className="page muted">Loading…</div>;
-  else if (auth.state === 'setup') body = <div className="page"><Setup onSignedIn={signedIn} /></div>;
-  else if (!user) body = <div className="page"><Login onSignedIn={signedIn} /></div>;
+  else if (auth.state === 'setup') body = <div className="page"><Setup onStep={secondStep} /></div>;
+  else if (auth.state === 'second-step') {
+    body = <div className="page"><SecondFactor step={auth.step} onSignedIn={signedIn}
+                                               onRestart={() => setAuth({ state: 'signed-out' })} /></div>;
+  } else if (!user) body = <div className="page"><Login onStep={secondStep} /></div>;
+  else if (route.page === 'account') body = <AccountPage me={user} />;
   else if (route.page === 'quick') body = <QuickSegment me={user} />;
   else if (route.page === 'project') {
     body = <ProjectPage key={route.id} projectId={route.id} tab={route.tab} me={user} />;
@@ -57,7 +63,7 @@ export default function App() {
       <header className="topbar">
         <a className="brand" href={href.projects()}>Interactive Labelling</a>
         <nav>
-          <a className={!['quick', 'users', 'audit'].includes(route.page) ? 'active' : ''}
+          <a className={!['quick', 'users', 'audit', 'account'].includes(route.page) ? 'active' : ''}
              href={href.projects()}>Projects</a>
           {user?.role === 'admin' && (
             <a className={route.page === 'users' ? 'active' : ''} href={href.users()}>Users</a>
@@ -72,7 +78,9 @@ export default function App() {
         <span className="grow" />
         {user && (
           <span className="user">
-            {user.display_name} <span className="muted small">({user.role})</span>
+            <a href={href.account()} title="Account and two-step sign-in"
+               className={route.page === 'account' ? 'active' : ''}>{user.display_name}</a>
+            {' '}<span className="muted small">({user.role})</span>
             <button onClick={signOut}>Sign out</button>
           </span>
         )}

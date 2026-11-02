@@ -57,7 +57,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from server.labelling import audit, auth, export, geometry, training
+from server.labelling import audit, auth, export, geometry, totp, training
 from server.labelling.db import (ALLOWED_LABEL_TYPES, ITEM_STATUSES, ROLES, TASK_TYPES,
                                  Database, now)
 from server.labelling.storage import ImageError, ImageStore, decode, extension
@@ -85,6 +85,18 @@ class SetupIn(BaseModel):
 class LoginIn(BaseModel):
     username: str = Field(max_length=64)
     password: str = Field(max_length=MAX_PASSWORD_LENGTH)
+
+
+class ChallengeIn(BaseModel):
+    challenge: str = Field(max_length=100)
+
+
+class CodeIn(ChallengeIn):
+    code: str = Field(max_length=32)
+
+
+class RenewCodesIn(BaseModel):
+    code: str = Field(max_length=32)
 
 
 class UserIn(BaseModel):
@@ -168,7 +180,8 @@ class AnnotationPatch(BaseModel):
 
 def user_out(r: sqlite3.Row) -> dict:
     return {'id': r['id'], 'username': r['username'], 'display_name': r['display_name'],
-            'role': r['role'], 'active': bool(r['active']), 'created_at': r['created_at']}
+            'role': r['role'], 'active': bool(r['active']), 'created_at': r['created_at'],
+            'two_factor': bool(r['totp_secret'])}
 
 
 def project_out(r: sqlite3.Row) -> dict:
@@ -217,6 +230,8 @@ class LabellingContext:
     # auto-label proposal set id -> {item_id, user_id, model, proposals}, oldest first
     proposals: OrderedDict = field(default_factory=OrderedDict)
     throttle: auth.LoginThrottle = field(default_factory=auth.LoginThrottle)
+    # Encrypts the authenticator keys; its key file sits next to the database.
+    secret_box: Optional[totp.SecretBox] = None
     # FastAPI dependencies, shared with the segmentation endpoints in app.py.
     get_db: Optional[Callable] = None
     current_user: Optional[Callable] = None
@@ -232,6 +247,7 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
     data_dir = Path(data_dir)
     ctx = LabellingContext(Database(data_dir / 'labelling.db'),
                            ImageStore(data_dir / 'items'), manager)
+    ctx.secret_box = totp.SecretBox(data_dir / 'totp.key')
     models_dir = data_dir / 'models'
     ctx.training = training.TrainingRunner(ctx.db, ctx.images, models_dir, manager.weights_dir,
                                            manager.device)
@@ -333,7 +349,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         ctx.setup_token = None
         user = conn.execute('SELECT * FROM users WHERE id = ?', (cur.lastrowid,)).fetchone()
         audit.record(conn, 'auth.setup', user=user, target=f"user:{user['id']}")
-        return {'token': auth.issue_token(conn, user['id']), 'user': user_out(user)}
+        # The first admin, too, sets up the authenticator before getting a session.
+        return second_step(conn, user)
 
     @router.post('/auth/login')
     def login(body: LoginIn, conn: sqlite3.Connection = Depends(get_db, scope='function')):
@@ -351,9 +368,133 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
             audit.record_now(ctx.db, 'auth.login_failed', username=body.username,
                              detail={'locked': True} if locked else None)
             raise HTTPException(401, 'Wrong username or password')
+        # The password is right; the sign-in completes after the second factor,
+        # and failures there still count towards this lockout.
+        audit.record(conn, 'auth.password_ok', user=user)
+        return second_step(conn, user)
+
+    def second_step(conn, user) -> dict:
+        kind = 'code' if user['totp_secret'] else 'enrol'
+        return {'second_factor': kind, 'challenge': auth.issue_challenge(conn, user['id'], kind),
+                'user': {'username': user['username'], 'display_name': user['display_name']}}
+
+    def throttle_keys(user) -> tuple[str, str]:
+        return f"user:{user['username'].lower()}", f'ip:{audit.client_ip.get()}'
+
+    def check_throttle(keys) -> None:
+        wait = ctx.throttle.locked(*keys)
+        if wait:
+            raise HTTPException(429, f'Too many failed sign-ins; try again in '
+                                     f'{int(wait) // 60 + 1} min',
+                                headers={'Retry-After': str(int(wait) + 1)})
+
+    def wrong_code(conn, body: CodeIn, user, keys) -> HTTPException:
+        # Recorded in its own transaction: the request's own one rolls back.
+        c2 = ctx.db.connect()
+        try:
+            with c2:
+                auth.challenge_failed(c2, body.challenge)
+        finally:
+            c2.close()
+        locked = ctx.throttle.failed(*keys)
+        audit.record_now(ctx.db, 'auth.2fa_failed', username=user['username'],
+                         detail={'locked': True} if locked else None)
+        return HTTPException(401, 'Wrong code')
+
+    def store_recovery_codes(conn, user_id: int) -> list[str]:
+        codes = totp.new_recovery_codes()
+        conn.execute('DELETE FROM recovery_codes WHERE user_id = ?', (user_id,))
+        conn.executemany('INSERT INTO recovery_codes (user_id, code_hash) VALUES (?, ?)',
+                         [(user_id, auth.hash_password(c)) for c in codes])
+        return codes
+
+    def codes_left(conn, user_id: int) -> int:
+        return conn.execute('SELECT COUNT(*) FROM recovery_codes WHERE user_id = ? AND used_at '
+                            'IS NULL', (user_id,)).fetchone()[0]
+
+    def signed_in(conn, user, keys, **extra) -> dict:
         ctx.throttle.succeeded(*keys)
         audit.record(conn, 'auth.login', user=user)
-        return {'token': auth.issue_token(conn, user['id']), 'user': user_out(user)}
+        fresh = conn.execute('SELECT * FROM users WHERE id = ?', (user['id'],)).fetchone()
+        return {'token': auth.issue_token(conn, user['id']), 'user': user_out(fresh), **extra}
+
+    @router.post('/auth/2fa/enrol')
+    def enrol(body: ChallengeIn, conn: sqlite3.Connection = Depends(get_db, scope='function')):
+        """A new authenticator key for this sign-in, as text and QR code."""
+        user = auth.find_challenge(conn, body.challenge, 'enrol')
+        if user is None:
+            raise HTTPException(401, 'Sign-in expired; sign in again')
+        secret = totp.new_secret()
+        auth.set_pending_secret(conn, body.challenge, ctx.secret_box.seal(secret))
+        uri = totp.otpauth_uri(secret, user['username'])
+        return {'secret': totp.secret_text(secret), 'uri': uri, 'qr': totp.qr_data_url(uri),
+                'issuer': totp.ISSUER, 'account': user['username']}
+
+    @router.post('/auth/2fa/activate')
+    def activate(body: CodeIn, conn: sqlite3.Connection = Depends(get_db, scope='function')):
+        """Confirm the new key with a code from the app; completes the sign-in
+        and returns the recovery codes, which are shown only this once."""
+        user = auth.find_challenge(conn, body.challenge, 'enrol')
+        if user is None or not user['pending_secret']:
+            raise HTTPException(401, 'Sign-in expired; sign in again')
+        keys = throttle_keys(user)
+        check_throttle(keys)
+        sealed = user['pending_secret']
+        step = totp.matching_step(ctx.secret_box.open(sealed), body.code, None)
+        if step is None:
+            raise wrong_code(conn, body, user, keys)
+        conn.execute('UPDATE users SET totp_secret = ?, totp_last_step = ? WHERE id = ?',
+                     (sealed, step, user['id']))
+        codes = store_recovery_codes(conn, user['id'])
+        auth.drop_challenge(conn, body.challenge)
+        audit.record(conn, 'auth.2fa_enrolled', user=user, target=f"user:{user['id']}")
+        return signed_in(conn, user, keys, recovery_codes=codes)
+
+    @router.post('/auth/login/verify')
+    def verify(body: CodeIn, conn: sqlite3.Connection = Depends(get_db, scope='function')):
+        """The second step: a code from the authenticator app, or a recovery code."""
+        user = auth.find_challenge(conn, body.challenge, 'code')
+        if user is None:
+            raise HTTPException(401, 'Sign-in expired; sign in again')
+        keys = throttle_keys(user)
+        check_throttle(keys)
+        if totp.looks_like_recovery_code(body.code):
+            code = totp.normalise_recovery_code(body.code)
+            hit = next((r['id'] for r in conn.execute(
+                'SELECT id, code_hash FROM recovery_codes WHERE user_id = ? AND used_at IS NULL',
+                (user['id'],)) if auth.verify_password(code, r['code_hash'])), None)
+            if hit is None:
+                raise wrong_code(conn, body, user, keys)
+            conn.execute('UPDATE recovery_codes SET used_at = ? WHERE id = ?', (now(), hit))
+            audit.record(conn, 'auth.recovery_code_used', user=user,
+                         detail={'left': codes_left(conn, user['id'])})
+        else:
+            step = totp.matching_step(ctx.secret_box.open(user['totp_secret']), body.code,
+                                      user['totp_last_step'])
+            if step is None:
+                raise wrong_code(conn, body, user, keys)
+            conn.execute('UPDATE users SET totp_last_step = ? WHERE id = ?', (step, user['id']))
+        auth.drop_challenge(conn, body.challenge)
+        return signed_in(conn, user, keys, recovery_codes_left=codes_left(conn, user['id']))
+
+    @router.post('/auth/2fa/recovery-codes')
+    def renew_recovery_codes(body: RenewCodesIn, user=Depends(current_user),
+                             conn: sqlite3.Connection = Depends(get_db, scope='function')):
+        """Replace the recovery codes; needs a current code from the app."""
+        keys = throttle_keys(user)
+        check_throttle(keys)
+        step = totp.matching_step(ctx.secret_box.open(user['totp_secret']), body.code,
+                                  user['totp_last_step'])
+        if step is None:
+            locked = ctx.throttle.failed(*keys)
+            audit.record_now(ctx.db, 'auth.2fa_failed', username=user['username'],
+                             detail={'locked': True} if locked else None)
+            # 400, not 401: the session is fine, only the code is wrong.
+            raise HTTPException(400, 'Wrong code')
+        conn.execute('UPDATE users SET totp_last_step = ? WHERE id = ?', (step, user['id']))
+        codes = store_recovery_codes(conn, user['id'])
+        audit.record(conn, 'auth.recovery_codes_renewed', user=user, target=f"user:{user['id']}")
+        return {'recovery_codes': codes}
 
     @router.post('/auth/logout', status_code=204)
     def logout(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -366,8 +507,8 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
         return Response(status_code=204)
 
     @router.get('/auth/me')
-    def me(user=Depends(current_user)):
-        return user_out(user)
+    def me(user=Depends(current_user), conn: sqlite3.Connection = Depends(get_db, scope='function')):
+        return {**user_out(user), 'recovery_codes_left': codes_left(conn, user['id'])}
 
     # ── users ─────────────────────────────────────────────────────────────
 

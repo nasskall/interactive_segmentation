@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { AssignBar, ClassesEditor, ExportPanel, ModelsPanel, NewProject, ProjectSettings, TeamProgress,
          UploadPanel } from './Admin';
-import { api, MIN_PASSWORD, setToken, TASK_LABELS, type Item, type ItemStatus, type Progress, type Project,
-         type User } from './api';
+import { api, MIN_PASSWORD, TASK_LABELS, type Item, type ItemStatus, type LoginStep, type Progress,
+         type Project, type User } from './api';
 import { go, href, type ProjectTab } from './lib';
 
 // ── sign-in ────────────────────────────────────────────────────────────────
 
-export function Login({ onSignedIn }: { onSignedIn: (u: User) => void }) {
+export function Login({ onStep }: { onStep: (s: LoginStep) => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -18,9 +18,7 @@ export function Login({ onSignedIn }: { onSignedIn: (u: User) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.login(username, password);
-      setToken(r.token);
-      onSignedIn(r.user);
+      onStep(await api.login(username, password));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -41,7 +39,7 @@ export function Login({ onSignedIn }: { onSignedIn: (u: User) => void }) {
   );
 }
 
-export function Setup({ onSignedIn }: { onSignedIn: (u: User) => void }) {
+export function Setup({ onStep }: { onStep: (s: LoginStep) => void }) {
   const [form, setForm] = useState({ setup_token: '', username: '', display_name: '',
                                      password: '' });
   const [error, setError] = useState<string | null>(null);
@@ -54,9 +52,7 @@ export function Setup({ onSignedIn }: { onSignedIn: (u: User) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.setup({ ...form, setup_token: form.setup_token.trim() });
-      setToken(r.token);
-      onSignedIn(r.user);
+      onStep(await api.setup({ ...form, setup_token: form.setup_token.trim() }));
     } catch (err) {
       setError((err as Error).message);
     } finally {

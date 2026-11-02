@@ -21,6 +21,44 @@ from server.sessions import ModelManager  # noqa: E402
 
 PASSWORD = 'correct horse'
 
+# Authenticator keys of the accounts the tests set up, by (database, username).
+_AUTH_KEYS: dict[tuple[str, str], bytes] = {}
+
+
+def next_code(client, username: str) -> str:
+    """A fresh code from ``username``'s authenticator, one step later."""
+    from server.labelling import totp
+    totp.clock.t += totp.STEP
+    key = _AUTH_KEYS[(str(client.app.state.labelling.db.path), username.lower())]
+    return totp.code_at(key, totp.current_step())
+
+
+def finish_sign_in(client, r) -> dict:
+    """Complete a sign-in after the password (setup or login response):
+    set up the authenticator the first time, then answer with a code."""
+    import base64
+    assert r.status_code in (200, 201), r.text
+    step = r.json()
+    username = step['user']['username']
+    if step['second_factor'] == 'enrol':
+        e = client.post('/api/auth/2fa/enrol', json={'challenge': step['challenge']})
+        assert e.status_code == 200, e.text
+        b32 = e.json()['secret'].replace(' ', '')
+        _AUTH_KEYS[(str(client.app.state.labelling.db.path), username.lower())] = \
+            base64.b32decode(b32 + '=' * (-len(b32) % 8))
+        done = client.post('/api/auth/2fa/activate', json={
+            'challenge': step['challenge'], 'code': next_code(client, username)})
+    else:
+        done = client.post('/api/auth/login/verify', json={
+            'challenge': step['challenge'], 'code': next_code(client, username)})
+    assert done.status_code == 200, done.text
+    return done.json()
+
+
+def sign_in(client, username: str, password: str = PASSWORD) -> dict:
+    return finish_sign_in(client, client.post('/api/auth/login', json={
+        'username': username, 'password': password}))
+
 
 def _png(w=160, h=120, color=(40, 40, 160)):
     img = np.full((h, w, 3), 200, np.uint8)
@@ -66,16 +104,14 @@ def admin(client):
     token = client.app.state.labelling.setup_token
     r = client.post('/api/auth/setup', json={'setup_token': token, 'username': 'admin',
                                              'password': PASSWORD, 'display_name': 'Admin'})
-    assert r.status_code == 201, r.text
-    return Api(client, r.json()['token'], r.json()['user'])
+    done = finish_sign_in(client, r)
+    return Api(client, done['token'], done['user'])
 
 
 def _labeller(admin: Api, username='lab1') -> Api:
     user = admin.ok('post', '/api/users', 201, json={
         'username': username, 'password': PASSWORD, 'display_name': username.title()})
-    r = admin.client.post('/api/auth/login', json={'username': username, 'password': PASSWORD})
-    assert r.status_code == 200, r.text
-    return Api(admin.client, r.json()['token'], user)
+    return Api(admin.client, sign_in(admin.client, username)['token'], user)
 
 
 def _project(admin: Api, task_type='detection', **kw) -> dict:
@@ -103,7 +139,8 @@ def test_first_admin_needs_the_setup_token(client):
 
     body['setup_token'] = client.app.state.labelling.setup_token
     r = client.post('/api/auth/setup', json=body)
-    assert r.status_code == 201 and r.json()['user']['role'] == 'admin'
+    assert r.status_code == 201 and r.json()['second_factor'] == 'enrol'
+    assert finish_sign_in(client, r)['user']['role'] == 'admin'
     assert client.get('/api/auth/status').json() == {'needs_setup': False}
     assert client.post('/api/auth/setup', json=body).status_code == 409
 
@@ -179,8 +216,7 @@ def test_data_persists_across_restarts(app_factory, admin):
 
     client = TestClient(app_factory())
     assert client.get('/api/auth/status').json() == {'needs_setup': False}
-    again = Api(client, client.post('/api/auth/login', json={
-        'username': 'admin', 'password': PASSWORD}).json()['token'], admin.user)
+    again = Api(client, sign_in(client, 'admin')['token'], admin.user)
     assert [x['name'] for x in again.ok('get', '/api/projects')] == ['detection']
     item = again.ok('get', f"/api/projects/{p['id']}/items")[0]
     assert again.get(item['images']['image']).status_code == 200

@@ -43,7 +43,8 @@ team of labellers**, one server, no internet exposure.
 | Sign-in on every endpoint; role-based access (admin / labeller); labellers see only assigned items | `server/labelling/api.py`, `server/app.py` | `tests/test_labelling.py`, `tests/test_security.py` |
 | Segmentation sessions private to the account that opened them; only admins switch the shared model | `server/app.py` | `tests/test_security.py` |
 | Passwords hashed with scrypt; 12-character minimum; bearer tokens stored only as SHA-256 and expiring after 12 hours; revoked on password change and deactivation | `server/labelling/auth.py` | `tests/test_labelling.py` |
-| Sign-in throttling: 5 failures in 15 minutes lock the username and the client address for 15 minutes | `server/labelling/auth.py` | `tests/test_security.py` |
+| Two-step sign-in for every account: password, then a one-time code from an authenticator app (TOTP, RFC 6238; no code reused); 10 one-time recovery codes stored scrypt-hashed; authenticator keys encrypted at rest with a key file kept out of the database and its backups; a session token only after both steps; a full sign-out when the feature arrives | `server/labelling/totp.py`, `server/labelling/auth.py`, `server/labelling/api.py`, sign-in pages and **Account** page | `tests/test_two_factor.py`, `tools/e2e_check.py` |
+| Sign-in throttling: 5 failures in 15 minutes, wrong passwords and wrong codes alike, lock the username and the client address for 15 minutes | `server/labelling/auth.py` | `tests/test_security.py`, `tests/test_two_factor.py` |
 | Tamper-evident audit log of sign-ins, failures, lockouts, account and role changes, project / class / item / annotation changes, exports and model switches; hash-chained, with an integrity check | `server/labelling/audit.py`, admin page **Audit log** | `GET /api/audit`, `GET /api/audit/verify` |
 | AI provenance: every assisted annotation records the model type, checkpoint and its SHA-256 (all members for an ensemble; the adapter's id and SHA-256 for a project model), the clicks that produced it and the labeller who accepted it; COCO and CSV exports carry the model and labeller | `server/sessions.py` (`provenance`), `server/labelling/export.py` | `tests/test_security.py`, `tests/test_project_models.py` |
 | Project models: training on a project's own labels with held-out images, an in-app register (base and adapter SHA-256, held-out scores), explicit admin choice before use, SHA-256 check before loading, audit-logged; automatic models (SAM 2 or standalone student) only propose labels, each accepted or rejected by a labeller; model downloads carry a model card and are audit-logged | `server/labelling/training.py`, `isegm/adaptation/project_training.py`, `isegm/adaptation/promptless.py`, `isegm/adaptation/student.py`, project page **Models** tab, workspace **Auto-label** | `tests/test_project_models.py`, `tests/test_auto_models.py`, `tests/test_project_training.py`, `tests/test_promptless.py`, `tests/test_student.py` |
@@ -57,10 +58,11 @@ team of labellers**, one server, no internet exposure.
 - **Encryption at rest.** The SQLite database and uploaded images are plain
   files. Put `data/` on an encrypted volume (BitLocker / LUKS), which also
   covers backups made from it. See [secure-operation.md](secure-operation.md).
-- **Multi-factor authentication** is not built in. On a lab network,
-  network-level controls (VPN, Wi-Fi with 802.1X) and the throttling
-  above are the compensating controls; add MFA or SSO before any internet
-  exposure.
+- **Phishing-resistant authentication.** Two-step sign-in uses one-time
+  codes, which a convincing fake sign-in page could still capture and replay
+  within their 30 seconds. Security keys or passkeys (WebAuthn) would close
+  that, but need a certificate that matches the server's hostname. Add them,
+  or SSO, before any internet exposure.
 - **Log retention and off-host copies.** The audit log lives in the same
   database it protects. Its hash chain detects edits, but an attacker with
   full write access could rebuild the chain. Copy the log off the host
