@@ -89,11 +89,24 @@ On the server:
 cd ~/ai_apps/interactive_segmentation
 tar -xzf ~/iseg-bundle.tar.gz
 (cd model_weights && sha256sum -c SHA256SUMS)
-rm ~/iseg-bundle.tar.gz
 ```
 
-Every line must say `OK`, and the hashes must match the ones in
-`docs/compliance/model-register.md`. The bundle is about 890 MB.
+Every line must say `OK`. That only shows the copy arrived intact:
+`pack.ps1` wrote `SHA256SUMS` from the files on the PC. So check them
+against the hashes in `docs/compliance/model-register.md` as well:
+
+```bash
+grep -oE '`[^`]+\.pth?`.*`[0-9a-f]{64}`' docs/compliance/model-register.md \
+  | sed -E 's/^`([^`]+)`.*`([0-9a-f]{64})`.*/\2  \1/' \
+  | (cd model_weights && sha256sum -c)
+```
+
+Again every line must say `OK`; a `FAILED` file is not the registered
+model, so stop there. Only then remove the bundle (about 890 MB):
+
+```bash
+rm ~/iseg-bundle.tar.gz
+```
 
 ## Step 4: First run by hand
 
