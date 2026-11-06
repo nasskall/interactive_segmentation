@@ -213,18 +213,17 @@ images, and *Mark done & next* jumps to the next unfinished one.
   held-out images. It auto-labels about ten times faster and, like every
   finished model, can be downloaded with a model card; a student's download
   also holds `model.onnx`, which runs with ONNX Runtime alone (no PyTorch).
-- **On the lab server** (Ubuntu, Apache, Slurm): [deploy/ailab26.md](deploy/ailab26.md)
+- **On the lab server** (Ubuntu, Apache): [deploy/ailab26.md](deploy/ailab26.md)
   installs it at `https://<server>/iseg/` behind the existing Apache site,
-  as a systemd service, with every training as a Slurm job on a GPU.
+  as a systemd service, with every training on one GPU of the server.
 - **Where training runs:** each training is a separate worker process
-  (`python -m server.labelling.train_worker`), one at a time; its output is
-  kept in `data/models/logs/`. On a Slurm cluster, start the server with
-  `ISEG_TRAIN_LAUNCHER=deploy/slurm_train.sh` and every training becomes one
-  Slurm job on one GPU (`srun --gres=gpu:1`); `ISEG_SLURM_ARGS` adds srun
-  options (e.g. `--partition=gpu --time=4:00:00`), `ISEG_SLURM_LOG_DIR` moves
-  the job logs (default `data/slurm`), and Cancel cancels the job. Clicks and
-  Auto-label stay in the server process. `ISEG_TRAIN_DEVICE` forces the
-  worker's device (default: the first GPU it sees, else the CPU).
+  (`python -m server.labelling.train_worker`), a child of the server, one at
+  a time; its output is kept in `data/models/logs/`, and Cancel stops it.
+  Clicks and Auto-label stay in the server process. `ISEG_TRAIN_DEVICE`
+  sets the worker's device (e.g. `cuda:1`; default: the first GPU it sees,
+  else the CPU). Optionally, `ISEG_TRAIN_LAUNCHER` puts a command in front of
+  the worker, e.g. `deploy/slurm_train.sh` to run each training as a Slurm
+  job (`ISEG_SLURM_ARGS`, `ISEG_SLURM_LOG_DIR`); the deployment doesn't use it.
 
 On first start with an empty `data/`, the server prints a one-time setup
 token. Create the first admin with it via `POST /api/auth/setup`. Sign-in has

@@ -1,13 +1,14 @@
 # Interactive labelling web app (uvicorn), on localhost only; Apache publishes
 # it at https://<server>/iseg/ (deploy/apache/iseg.conf). Clicks and
-# Auto-label run here on the CPU; every model training runs as a Slurm job
-# on one GPU through deploy/slurm_train.sh. Walkthrough: deploy/ailab26.md
+# Auto-label run here on the CPU; every model training runs as a child worker
+# process of this service on one GPU (ISEG_TRAIN_DEVICE). Walkthrough:
+# deploy/ailab26.md
 #
 #   sudo cp deploy/systemd/iseg-api.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now iseg-api
 [Unit]
 Description=Interactive labelling (uvicorn on 127.0.0.1:8020, behind Apache at /iseg/)
-After=network-online.target slurmctld.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -16,19 +17,19 @@ User=admin_ai
 Group=admin_ai
 WorkingDirectory=/home/admin_ai/ai_apps/interactive_segmentation
 Environment=PYTHONUNBUFFERED=1
-# Clicks use the CPU; keep them from taking all 48 cores from Slurm jobs.
+# Clicks and the training worker use the CPU too; keep them from taking all
+# 48 cores from the server's other work.
 Environment=OMP_NUM_THREADS=8
 Environment=MKL_NUM_THREADS=8
-# Trainings as Slurm jobs. main defaults to a 1 h limit, so ask for more;
-# DefMemPerCPU is 8 GB, so 4 CPUs come with 32 GB.
-Environment=ISEG_TRAIN_LAUNCHER=/home/admin_ai/ai_apps/interactive_segmentation/deploy/slurm_train.sh
-Environment="ISEG_SLURM_ARGS=--partition=main --time=4:00:00 --cpus-per-task=4 --mem=32G"
+# Trainings run one at a time, as local worker processes, on this GPU.
+# Pick one that the other apps on the server leave free (nvidia-smi).
+Environment=ISEG_TRAIN_DEVICE=cuda:0
 # One process only: sessions, loaded models and the training queue live in memory.
 ExecStart=/home/admin_ai/ai_apps/interactive_segmentation/.venv/bin/python -m server.main --cpu --host 127.0.0.1 --port 8020
 Restart=always
 RestartSec=5
-# Stopping kills the service's whole cgroup, srun included, so a training
-# in progress is cancelled with it (it shows as interrupted after the restart).
+# Stopping kills the service's whole cgroup, the training worker included, so a
+# training in progress is cancelled with it (it shows as interrupted after the restart).
 TimeoutStopSec=30
 
 [Install]

@@ -1094,29 +1094,30 @@ class E2E:
             assert m['status'] == 'done', f"{m['status']}: {m.get('error')}"
             trained['student'] = m
 
-        with r.check('Cancel a running training; its Slurm job leaves the queue'):
+        with r.check('Cancel a running training; its worker process ends'):
             m = self.train('Interactive', 3000)
             m = self.wait_model(m['id'], until=('running', 'done', 'failed', 'cancelled'), timeout=600)
             assert m['status'] == 'running', m['status']
-            job = None
             for _ in range(60):
                 m = next(x for x in self.models_of() if x['id'] == m['id'])
-                job = (m.get('progress') or {}).get('slurm_job') or m.get('slurm_job')
-                if (m.get('progress') or {}).get('phase') not in (None, 'waiting for the scheduler'):
+                if (m.get('progress') or {}).get('phase') not in (None, 'starting',
+                                                                  'waiting for the scheduler'):
                     break
                 time.sleep(5)
             goto(r, f'/projects/{self.projects["A"]}/models')
             p.locator('tr', has_text=f"#{m['id']} ·").get_by_role('button', name='Cancel').click()
             m = self.wait_model(m['id'], timeout=120)
             assert m['status'] == 'cancelled', m['status']
-            if shutil.which('squeue'):
+            if self.args.data_dir and shutil.which('pgrep'):
                 time.sleep(5)
-                # Job names are iseg-m<model>-<pid>; none of this model's may be left.
-                q = subprocess.run(['squeue', '-h', '-o', '%j'], capture_output=True, text=True).stdout
-                left = [j for j in q.split() if j.startswith(f"iseg-m{m['id']}-")]
-                assert not left, f'Slurm job still queued: {left}'
+                # The worker's command line ends with <data>/models/project_<p>/model_<m>/job.json.
+                ps = subprocess.run(['pgrep', '-af', 'server.labelling.train_worker'],
+                                    capture_output=True, text=True).stdout.splitlines()
+                job = f"/model_{m['id']}/job.json"
+                left = [l for l in ps if str(self.args.data_dir) in l and job in l]
+                assert not left, f'worker still running: {left}'
             else:
-                print('       (no squeue here: Slurm queue not checked)', flush=True)
+                print('       (no --data-dir or no pgrep: worker process not checked)', flush=True)
 
         with r.check('Download each trained model as a zip'):
             if not trained:
@@ -1434,6 +1435,8 @@ def main():
     ap.add_argument('--no-train', action='store_true', help='skip project-model training')
     ap.add_argument('--steps', type=int, default=20, help='training steps per model (min 10)')
     ap.add_argument('--train-timeout', type=int, default=1800, help='seconds per training')
+    ap.add_argument('--data-dir', type=Path,
+                    help="the server's --data-dir, to check that a cancelled worker ends")
     ap.add_argument('--headed', action='store_true')
     ap.add_argument('--only', help='comma-separated section names (development)')
     args = ap.parse_args()
