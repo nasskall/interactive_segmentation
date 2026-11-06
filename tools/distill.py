@@ -18,7 +18,7 @@ Two stages, both resumable:
               would have accepted from the teacher, with no expert check
               (``--target accepted``), or the expert masks (``--target gt``,
               the control). Every --eval-every steps the
-              student is scored on the lesion benchmark's eval split and its
+              student is scored on the --select-split of --bench and its
               adapter saved; the best checkpoint by NoC@90 is reported.
 
 Run from repo root, e.g.:
@@ -30,6 +30,15 @@ Run from repo root, e.g.:
 
 A killed train run continues from its latest step checkpoint with the same
 arguments plus --resume.
+
+Standard ISIC 2018 protocol (tools/build_isic_protocol.py): the teacher is
+adapted on the session split and labels the train split, checkpoints are
+picked on val, and only click_benchmark.py touches test:
+    python tools/distill.py targets --pool datasets/isic2018_protocol --bench datasets/isic2018_protocol         --out experiments/isic/sc_sam2
+    python tools/distill.py train --targets experiments/isic/sc_sam2 --target accepted --seed 1         --bench datasets/isic2018_protocol --select-split val --out experiments/isic/accepted_s1
+    python tools/click_benchmark.py --model sam2 --adapter experiments/isic/accepted_s1/best.pt         --data datasets/isic2018_protocol --eval-split test --no-adapt --per-image results/accepted_s1.json
+--n-records N trains on a fixed subset of N labelled images (the same
+nested subsets for every seed), for label-efficiency curves.
 
 Load a saved student in the desktop app (Load adapter) or score it with
     python tools/click_benchmark.py --model sam2 --adapter <run>/best.pt --data datasets/lesion_bench
@@ -86,7 +95,7 @@ def make_ctrl(net) -> InteractiveController:
 
 # ── stage 1: teacher targets ──────────────────────────────────────────────
 
-def build_teacher(members: list[str], adapt: bool, presses: int, out: Path):
+def build_teacher(members: list[str], adapt: bool, presses: int, out: Path, bench: Path):
     net = (cb.load_model(members[0]) if len(members) == 1
            else EnsembleNet([(m, cb.load_model(m)) for m in members]))
     ctrl = make_ctrl(net)
@@ -96,7 +105,7 @@ def build_teacher(members: list[str], adapt: bool, presses: int, out: Path):
         ctrl.load_adapter(str(saved))
         print(f'  teacher adapter loaded from {saved}', flush=True)
     elif adapt:
-        session = cb.load_manifest(BENCH)['session']
+        session = cb.load_manifest(bench)['session']
         ctrl.online_recording = True
         for _, image, gt in session:
             cb.click_until(ctrl, image, gt, 10, 0.90)
@@ -137,7 +146,7 @@ def cmd_targets(args):
     (out / 'records').mkdir(parents=True, exist_ok=True)
     members = args.members.split(',')
     (out / 'config.json').write_text(json.dumps(
-        {'members': members, 'adapt': not args.no_adapt, 'presses': args.presses,
+        {'members': members, 'adapt': not args.no_adapt, 'presses': args.presses, 'bench': str(args.bench),
          'pool': str(args.pool), 'split': args.split, 'max_clicks': args.max_clicks, 'stop_iou': args.stop_iou},
         indent=1))
     pool = pool_names(args.pool, args.split)[:args.limit]
@@ -146,7 +155,7 @@ def cmd_targets(args):
           f'{len(pool)} pool images, {len(todo)} to label', flush=True)
     if not todo:
         return
-    ctrl = build_teacher(members, not args.no_adapt, args.presses, out)
+    ctrl = build_teacher(members, not args.no_adapt, args.presses, out, args.bench)
     t0, all_ious = time.time(), []
     for n, name in enumerate(todo, 1):
         image, gt = load_item(args.pool, name)
@@ -262,7 +271,11 @@ def cmd_train(args):
     cfg = json.loads((args.targets / 'config.json').read_text())
     pool_dir = Path(cfg['pool'])
     recs = load_records(args.targets, pool_names(pool_dir, cfg.get('split', 'train')))
-    evals = cb.load_manifest(BENCH)['eval'][:args.n_eval]
+    if args.n_records is not None:
+        # One fixed order (not --seed), so smaller subsets nest inside larger ones.
+        order = np.random.default_rng(0).permutation(len(recs))
+        recs = [recs[i] for i in sorted(order[:args.n_records])]
+    evals = cb.load_manifest(args.bench)[args.select_split][:args.n_eval]
     print(f'student SAM 2 on {len(recs)} records, target={args.target}, '
           f'{args.steps} steps x batch {args.batch}, lr {args.lr}, rank {args.rank}', flush=True)
 
@@ -345,6 +358,7 @@ def main():
     t.add_argument('--stop-iou', type=float, default=0.95)
     t.add_argument('--limit', type=int, default=None, help='label only the first N images')
     t.add_argument('--out', type=Path, required=True)
+    t.add_argument('--bench', type=Path, default=BENCH, help='benchmark whose session split adapts the teacher')
 
     s = sub.add_parser('train', help='train the SAM 2 student')
     s.add_argument('--targets', type=Path, required=True)
@@ -356,6 +370,11 @@ def main():
     s.add_argument('--eval-every', type=int, default=500)
     s.add_argument('--seed', type=int, default=0)
     s.add_argument('--n-eval', type=int, default=None, help='score on the first N eval images')
+    s.add_argument('--bench', type=Path, default=BENCH, help='benchmark the checkpoints are scored on')
+    s.add_argument('--n-records', type=int, default=None,
+                   help='train on a fixed subset of this many labelled images')
+    s.add_argument('--select-split', default='eval',
+                   help='split of --bench that picks the best checkpoint (val for the standard protocol)')
     s.add_argument('--out', type=Path, default=None)
     s.add_argument('--resume', action='store_true',
                    help='continue from the latest step checkpoint in --out')

@@ -39,6 +39,32 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / 'datasets' / 'isic2018_val' / 'raw'
 
 
+def convert(images: Path, masks: Path, out: Path, max_side: int) -> list[dict]:
+    """Shrink every ISIC image in ``images`` (and its ``<name>_segmentation.png``
+    in ``masks``) into ``out/images`` and ``out/masks``; one manifest item each,
+    without a split."""
+    (out / 'images').mkdir(parents=True, exist_ok=True)
+    (out / 'masks').mkdir(parents=True, exist_ok=True)
+    items = []
+    for name in sorted(p.stem for p in images.glob('ISIC_*.jpg')):
+        bgr = cv2.imread(str(images / f'{name}.jpg'))
+        gt = cv2.imread(str(masks / f'{name}_segmentation.png'), cv2.IMREAD_GRAYSCALE)
+        if bgr is None or gt is None or bgr.shape[:2] != gt.shape:
+            sys.exit(f'{name}: missing image or mask, or their sizes differ')
+        h, w = gt.shape
+        scale = min(1.0, max_side / max(h, w))
+        if scale < 1.0:
+            size = (round(w * scale), round(h * scale))
+            bgr = cv2.resize(bgr, size, interpolation=cv2.INTER_AREA)
+            gt = cv2.resize(gt, size, interpolation=cv2.INTER_NEAREST)
+        mask = np.where(gt > 127, 255, 0).astype(np.uint8)
+        cv2.imwrite(str(out / 'images' / f'{name}.jpg'), bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        cv2.imwrite(str(out / 'masks' / f'{name}.png'), mask)
+        items.append({'name': name, 'orig_size': [w, h], 'size': [bgr.shape[1], bgr.shape[0]],
+                      'lesion_frac': round(float((mask > 0).mean()), 4)})
+    return items
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--images', type=Path, default=RAW / 'ISIC2018_Task1-2_Validation_Input')
@@ -55,26 +81,7 @@ def main():
     if args.all_split is None and len(names) < args.n_session + args.n_eval:
         sys.exit(f'Found {len(names)} images in {args.images}; '
                  f'need {args.n_session + args.n_eval}')
-    (args.out / 'images').mkdir(parents=True, exist_ok=True)
-    (args.out / 'masks').mkdir(parents=True, exist_ok=True)
-
-    items = []
-    for name in names:
-        bgr = cv2.imread(str(args.images / f'{name}.jpg'))
-        gt = cv2.imread(str(args.masks / f'{name}_segmentation.png'), cv2.IMREAD_GRAYSCALE)
-        if bgr is None or gt is None or bgr.shape[:2] != gt.shape:
-            sys.exit(f'{name}: missing image or mask, or their sizes differ')
-        h, w = gt.shape
-        scale = min(1.0, args.max_side / max(h, w))
-        if scale < 1.0:
-            size = (round(w * scale), round(h * scale))
-            bgr = cv2.resize(bgr, size, interpolation=cv2.INTER_AREA)
-            gt = cv2.resize(gt, size, interpolation=cv2.INTER_NEAREST)
-        mask = np.where(gt > 127, 255, 0).astype(np.uint8)
-        cv2.imwrite(str(args.out / 'images' / f'{name}.jpg'), bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        cv2.imwrite(str(args.out / 'masks' / f'{name}.png'), mask)
-        items.append({'name': name, 'orig_size': [w, h], 'size': [bgr.shape[1], bgr.shape[0]],
-                      'lesion_frac': round(float((mask > 0).mean()), 4)})
+    items = convert(args.images, args.masks, args.out, args.max_side)
 
     order = np.random.default_rng(args.seed).permutation(len(items))
     for rank, i in enumerate(order):
