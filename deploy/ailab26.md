@@ -1,4 +1,4 @@
-# Install on ailab26, behind Apache, with training on a GPU
+# Install on ailab26, behind Apache, with training as Slurm jobs
 
 How this app runs on the lab server, next to the audio-summary app (`/mas/`)
 and the others on the same HTTPS site. Values come from
@@ -7,16 +7,15 @@ and the others on the same HTTPS site. Values come from
 ```
 browser ──HTTPS──▶ Apache (ailab-ssl.conf, /iseg/) ──HTTP──▶ uvicorn 127.0.0.1:8020 ──▶ app (clicks, Auto-label on CPU)
                                                                      │
-                                                                     └─ each training ──▶ train_worker (child process) on one GPU
+                                                                     └─ each training ──▶ srun --gres=gpu:1 ──▶ train_worker on a GPU
 ```
 
 - **uvicorn** runs the app as one process on localhost only, under systemd
   (`iseg-api`). Clicks and Auto-label run there, on the CPU (48 cores).
 - **Apache** is the only way in: `https://<server>/iseg/` on the existing site,
   like `/mas/`. The app finds its base path in the browser; no app setting.
-- **Training** runs one model at a time as a child process of the service
-  (`train_worker`), on the GPU set by `ISEG_TRAIN_DEVICE` in the service
-  file. No Slurm: a run starts at once and has no time limit.
+- **Slurm** runs every model training as one job on one GPU, through
+  `deploy/slurm_train.sh`; the Models tab shows the job id while it runs.
 
 | Value | Used here | Change it if |
 | --- | --- | --- |
@@ -25,9 +24,9 @@ browser ──HTTPS──▶ Apache (ailab-ssl.conf, /iseg/) ──HTTP──▶
 | uvicorn port (localhost) | `8020` | `ss -tln` shows it taken; change it in the service and the Apache lines |
 | App folder | `/home/admin_ai/ai_apps/interactive_segmentation` | |
 | Service user / name | `admin_ai` / `iseg-api` | |
-| Training GPU | `ISEG_TRAIN_DEVICE=cuda:0` | `nvidia-smi` shows another app using that GPU |
+| Slurm options | `--partition=main --time=4:00:00 --cpus-per-task=4 --mem=32G` | trainings need more than 4 h, or the policy says another partition |
 
-Python is
+`main` gives a job 1 hour unless it asks for more, hence `--time`. Python is
 3.14; the GPUs are RTX PRO 6000 Blackwell with CUDA 13.2, which need the
 `cu132` build of PyTorch (step 2).
 
@@ -64,17 +63,15 @@ SAM2_BUILD_CUDA=0 .venv/bin/pip install --no-build-isolation -r requirements-ser
 - The server doesn't need Tk (`python3-tk`): the app only imports it in the
   desktop app.
 
-Check the GPU that trainings will use:
+Check the GPU from a Slurm job, as trainings will use it:
 
 ```bash
-nvidia-smi
-.venv/bin/python -c "import torch; print(torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))"
+srun --partition=short --gres=gpu:1 --time=0:05:00 \
+     .venv/bin/python -c "import torch; print(torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))"
 ```
 
-It should print `NVIDIA RTX PRO 6000 ...` and `(12, 0)`. In `nvidia-smi`,
-pick a GPU with little memory in use; if it is not GPU 0, change
-`ISEG_TRAIN_DEVICE` in `deploy/systemd/iseg-api.service` (step 5) to
-`cuda:<n>`.
+It should print `NVIDIA RTX PRO 6000 ...` and `(12, 0)`. It may wait in the
+queue first if the GPUs are busy.
 
 ## Step 3: Model checkpoints and the built frontend
 
@@ -116,11 +113,12 @@ rm ~/iseg-bundle.tar.gz
 
 ```bash
 cd ~/ai_apps/interactive_segmentation
-ISEG_TRAIN_DEVICE=cuda:0 \
+ISEG_TRAIN_LAUNCHER=$PWD/deploy/slurm_train.sh \
+ISEG_SLURM_ARGS="--partition=main --time=4:00:00 --cpus-per-task=4 --mem=32G" \
 .venv/bin/python -m server.main --cpu --host 127.0.0.1 --port 8020
 ```
 
-It prints `Project-model training: local worker process` and a setup
+It prints `Project-model training: .../deploy/slurm_train.sh` and a setup
 token (ignore it: it changes when the service starts). In a second terminal:
 
 ```bash
@@ -210,12 +208,12 @@ sign-in.
    model on the **Models** tab. While it runs:
 
    ```bash
-   pgrep -af server.labelling.train_worker
-   nvidia-smi
+   squeue -o '%.8i %.20j %.10u %.2t %.10M %b %R' | grep iseg-
    ```
 
-   show the worker (run by `admin_ai`) and its memory on the training GPU.
-   Cancel it once to check that the worker ends and frees the GPU.
+   shows the job (`iseg-m<model>-<pid>`, run by `admin_ai`), and the Models
+   tab shows the same Slurm job id. Cancel it once to check that the job
+   leaves the queue.
 
 ## Running it
 
@@ -265,6 +263,7 @@ failure has a screenshot next to the report.
 | The app (requests, startup, setup token) | `journalctl -u iseg-api -f` |
 | Who did what, in the app | **Audit log** page (admins) |
 | One training run | `data/models/logs/project_<p>_model_<m>.log` |
+| The Slurm job of a run | `data/slurm/<job id>.out` / `.err` |
 | Apache | `/var/log/apache2/` (the site's error and access logs) |
 
 ### Back up
@@ -327,10 +326,11 @@ Then delete the `/iseg/` lines from `ailab-ssl.conf`, `configtest` and
 | --- | --- | --- |
 | `/iseg/` gives **502 / 503 Proxy Error** | the service isn't running | `systemctl status iseg-api`, `journalctl -u iseg-api -n 50` |
 | The page loads but stays empty, or API calls go to `/api/...` and 404 | an old frontend build without base-path support | unpack a fresh bundle (step 3) |
-| A training fails with `CUDA out of memory` | another app uses the training GPU | `nvidia-smi`; set `ISEG_TRAIN_DEVICE` to a free GPU in `/etc/systemd/system/iseg-api.service`, `daemon-reload`, restart |
-| A training log says it runs on `cpu` | the service doesn't see a GPU | rerun step 2's GPU check as `admin_ai` |
+| A training stays at **waiting for the scheduler** | the GPUs are taken | `squeue` shows the reason (`Resources`, `Priority`); it starts when a GPU frees |
+| A training fails after exactly 1 hour | no `--time` in `ISEG_SLURM_ARGS` | keep `--time=4:00:00` (or more) in the service file, `daemon-reload`, restart |
 | A training log shows `no kernel image is available` | PyTorch without Blackwell support | reinstall PyTorch from the `cu132` index (step 2) |
 | `ModuleNotFoundError: sam2` | SAM 2 not installed into `.venv` | rerun the `requirements-server.txt` line of step 2 |
+| `slurm_train.sh: Permission denied` | the script lost its execute bit | `chmod +x deploy/slurm_train.sh` |
 | **413 Request Entity Too Large** on upload | Apache's body limit | keep the `LimitRequestBody` line from `iseg.conf` |
 | The audit log shows `127.0.0.1` for everyone | requests reached uvicorn without Apache's headers | keep uvicorn on `127.0.0.1` only (as in the service file) |
 | Users can't reach the site after a reboot | the server got a new DHCP address | ask for a fixed lease; update this file and the certificate |

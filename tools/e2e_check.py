@@ -1094,7 +1094,7 @@ class E2E:
             assert m['status'] == 'done', f"{m['status']}: {m.get('error')}"
             trained['student'] = m
 
-        with r.check('Cancel a running training; its worker process ends'):
+        with r.check('Cancel a running training; its worker (and Slurm job) ends'):
             m = self.train('Interactive', 3000)
             m = self.wait_model(m['id'], until=('running', 'done', 'failed', 'cancelled'), timeout=600)
             assert m['status'] == 'running', m['status']
@@ -1108,8 +1108,13 @@ class E2E:
             p.locator('tr', has_text=f"#{m['id']} ·").get_by_role('button', name='Cancel').click()
             m = self.wait_model(m['id'], timeout=120)
             assert m['status'] == 'cancelled', m['status']
+            time.sleep(5)
+            if shutil.which('squeue'):
+                # Job names are iseg-m<model>-<pid>; none of this model's may be left.
+                q = subprocess.run(['squeue', '-h', '-o', '%j'], capture_output=True, text=True).stdout
+                left = [j for j in q.split() if j.startswith(f"iseg-m{m['id']}-")]
+                assert not left, f'Slurm job still queued: {left}'
             if self.args.data_dir and shutil.which('pgrep'):
-                time.sleep(5)
                 # The worker's command line ends with <data>/models/project_<p>/model_<m>/job.json.
                 ps = subprocess.run(['pgrep', '-af', 'server.labelling.train_worker'],
                                     capture_output=True, text=True).stdout.splitlines()

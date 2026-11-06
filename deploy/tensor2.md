@@ -123,8 +123,9 @@ Then stop it with Ctrl+C.
 
 ## Step 5: Run it as a service
 
-The service file in the repo is written for ailab26; this makes Tensor 2's
-copy from it, with this server's user, folder, GPU and port:
+`deploy/systemd/iseg-api-local.service` is the service file for a server
+without Slurm (`iseg-api.service` is ailab26's, with Slurm). This makes Tensor
+2's copy from it, with this server's user, folder, GPU and port:
 
 ```bash
 cd "$ISEG_APP"
@@ -132,7 +133,7 @@ sed -e "s#/home/admin_ai/ai_apps/interactive_segmentation#$ISEG_APP#g" \
     -e "s#admin_ai#$ISEG_USER#g" \
     -e "s#ISEG_TRAIN_DEVICE=cuda:0#ISEG_TRAIN_DEVICE=$ISEG_GPU#" \
     -e "s#8020#$ISEG_PORT#g" \
-    deploy/systemd/iseg-api.service > /tmp/iseg-api.service
+    deploy/systemd/iseg-api-local.service > /tmp/iseg-api.service
 grep -E '^(User|Group|WorkingDirectory|Environment=ISEG|ExecStart)' /tmp/iseg-api.service
 ```
 
@@ -208,7 +209,9 @@ Add the other accounts on the **Users** page.
    Cancel it once to check that the worker ends and frees the GPU.
 3. For every screen and control: `deploy/e2e_check.sh` (set
    `ISEG_TRAIN_DEVICE=$ISEG_GPU` before it, and `ISEG_E2E_PORT` if 8021 is
-   taken); setup as in ailab26.md, *Check everything end to end*.
+   taken); setup as in ailab26.md, *Check everything end to end*. With no
+   `srun` on the server, its trainings run as local workers, like the
+   service's.
 
 ## Running it
 
@@ -216,7 +219,7 @@ Updates, logs, backups, password and two-step resets, and removal work as on
 ailab26 ([ailab26.md](ailab26.md), *Running it*), with `$ISEG_APP` as the app
 folder. Two differences:
 
-- After a `git pull` that changed `deploy/systemd/iseg-api.service`, redo
+- After a `git pull` that changed `deploy/systemd/iseg-api-local.service`, redo
   step 5 rather than copying the file as it is.
 - Training logs are only in `data/models/logs/` (there are no Slurm logs).
 

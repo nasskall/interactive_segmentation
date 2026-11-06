@@ -2,8 +2,9 @@
 # End-to-end check through the real UI (tools/e2e_check.py) against a separate
 # server instance: same code and model_weights/, but its own port and an empty
 # data folder in /tmp, so live users, projects and the audit log are not
-# touched. Trainings run as local worker processes on the GPU, like the live
-# service's (ISEG_TRAIN_DEVICE, default cuda:0).
+# touched. Trainings go to Slurm like ailab26's service when srun exists;
+# otherwise they run as local worker processes on the GPU, like the
+# no-Slurm service's (ISEG_TRAIN_DEVICE, default cuda:0).
 #
 #   deploy/e2e_check.sh [--no-train] [--steps 20] [--train-timeout 1800]
 #
@@ -20,7 +21,7 @@ APP="$(cd "$(dirname "$0")/.." && pwd)"
 PY="${ISEG_E2E_PYTHON:-$HOME/iseg-e2e/bin/python}"
 PORT="${ISEG_E2E_PORT:-8021}"
 WORK="$(mktemp -d /tmp/iseg-e2e.XXXXXX)"
-mkdir -p "$WORK/data" "$WORK/report"
+mkdir -p "$WORK/data" "$WORK/slurm" "$WORK/report"
 
 [ -x "$PY" ] || { echo "No Python at $PY; see the comment at the top of this file."; exit 2; }
 if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
@@ -28,8 +29,14 @@ if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
 fi
 
 cd "$APP"
-unset ISEG_TRAIN_LAUNCHER
-export ISEG_TRAIN_DEVICE="${ISEG_TRAIN_DEVICE:-cuda:0}"
+if command -v srun >/dev/null; then
+  export ISEG_TRAIN_LAUNCHER="$APP/deploy/slurm_train.sh"
+  export ISEG_SLURM_ARGS="${ISEG_SLURM_ARGS:---partition=main --time=1:00:00 --cpus-per-task=4 --mem=32G}"
+  export ISEG_SLURM_LOG_DIR="$WORK/slurm"
+else
+  unset ISEG_TRAIN_LAUNCHER
+  export ISEG_TRAIN_DEVICE="${ISEG_TRAIN_DEVICE:-cuda:0}"
+fi
 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 PYTHONUNBUFFERED=1 \
   .venv/bin/python -m server.main --cpu --host 127.0.0.1 --port "$PORT" \
   --data-dir "$WORK/data" > "$WORK/server.log" 2>&1 &
