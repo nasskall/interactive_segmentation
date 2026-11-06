@@ -213,14 +213,10 @@ images, and *Mark done & next* jumps to the next unfinished one.
   held-out images. It auto-labels about ten times faster and, like every
   finished model, can be downloaded with a model card; a student's download
   also holds `model.onnx`, which runs with ONNX Runtime alone (no PyTorch).
-- **On the lab server** (Ubuntu, Apache, Slurm): [deploy/ailab26.md](deploy/ailab26.md)
-  installs it at `https://<server>/iseg/` behind the existing Apache site,
-  as a systemd service (`deploy/systemd/iseg-api.service`), with every
-  training as a Slurm job on a GPU.
-- **On a server without Slurm**: [deploy/tensor2.md](deploy/tensor2.md)
-  installs it on the Tensor 2 server, behind Apache or with uvicorn's own
-  HTTPS (`deploy/systemd/iseg-api-local.service`), with every training on
-  one GPU of the server.
+- **On a server** (Ubuntu): [deploy/tensor2.md](deploy/tensor2.md)
+  installs it on the Tensor 2 server as a systemd service (from the template
+  `deploy/systemd/iseg-api.service`), behind Apache at `https://<server>/iseg/`
+  or with uvicorn's own HTTPS, with every training on one GPU of the server.
 - **Where training runs:** each training is a separate worker process
   (`python -m server.labelling.train_worker`), one at a time; its output is
   kept in `data/models/logs/`, and Cancel stops it. Clicks and Auto-label

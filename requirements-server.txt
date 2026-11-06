@@ -1,6 +1,6 @@
 # What the web server and its training worker need (python -m server.main),
 # without the training-only packages in requirements.txt. Versions as tested.
-# Install PyTorch first, built for the server's CUDA (deploy/ailab26.md), e.g.
+# Install PyTorch first, built for the server's CUDA (deploy/tensor2.md), e.g.
 #   pip install torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cu132
 # then this file with --no-build-isolation, so SAM 2 builds against that PyTorch.
 numpy==2.5.2

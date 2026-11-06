@@ -2,9 +2,9 @@
 # End-to-end check through the real UI (tools/e2e_check.py) against a separate
 # server instance: same code and model_weights/, but its own port and an empty
 # data folder in /tmp, so live users, projects and the audit log are not
-# touched. Trainings go to Slurm like ailab26's service when srun exists;
-# otherwise they run as local worker processes on the GPU, like the
-# no-Slurm service's (ISEG_TRAIN_DEVICE, default cuda:0).
+# touched. Trainings run as local worker processes on the GPU, like the
+# service's (ISEG_TRAIN_DEVICE, default cuda:0); on a Slurm cluster (srun
+# found) they go through deploy/slurm_train.sh instead.
 #
 #   deploy/e2e_check.sh [--no-train] [--steps 20] [--train-timeout 1800]
 #

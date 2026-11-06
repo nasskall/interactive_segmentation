@@ -1,8 +1,8 @@
 # Install on Tensor 2, with training on a GPU
 
-The same app as on ailab26 ([ailab26.md](ailab26.md)), on the Tensor 2 server.
-No Slurm: clicks and Auto-label run in the app's process on the CPU, and each
-training runs as a child process of the app on one GPU.
+How the app runs on the Tensor 2 server. No Slurm: clicks and Auto-label run
+in the app's process on the CPU, and each training runs as a child process of
+the app on one GPU.
 
 ```
 browser ──HTTPS──▶ Apache /iseg/ (or uvicorn's own HTTPS) ──▶ uvicorn ──▶ app (clicks, Auto-label on CPU)
@@ -19,12 +19,13 @@ curl -fsSLO https://raw.githubusercontent.com/nasskall/interactive_segmentation/
 bash server-diagnostics.sh        # read-only; also saved to ~/iseg-diag.txt
 ```
 
-Its SLURM section and the ailab26-specific lines (`admin_ai`, `mas-api`) will
-just say "not found"; that is expected. From its output, set these once per
-shell session (every command below uses them):
+Its SLURM section will just say "not found" on a server without Slurm; that
+is expected. From its output, set these once per shell session (every
+command below uses them):
 
 ```bash
 export ISEG_USER=<user that runs the app>                    # id, under ME / PERMISSIONS
+export ISEG_GROUP=$(id -gn $ISEG_USER)                        # that user's main group
 export ISEG_APP=/home/$ISEG_USER/ai_apps/interactive_segmentation
 export ISEG_GPU=cuda:0                                        # a GPU with little memory used, under GPU
 export ISEG_PORT=8020                                         # "free" under LISTENING PORTS
@@ -62,8 +63,9 @@ SAM2_BUILD_CUDA=0 .venv/bin/pip install --no-build-isolation -r requirements-ser
 .venv/bin/python -c "import torch, sam2, segment_anything, fastapi, segmentation_models_pytorch, onnx; print('ok', torch.__version__)"
 ```
 
-- `<cuXXX>` is the PyTorch build for the server's CUDA: `cu132` on ailab26
-  (CUDA 13.2). For another CUDA version, take the index URL from the selector
+- `<cuXXX>` is the PyTorch build for the server's CUDA: these versions were
+  tested with `cu132` (CUDA 13.2, RTX PRO 6000 Blackwell GPUs, which need
+  it). For another CUDA version, take the index URL from the selector
   on [pytorch.org](https://pytorch.org/get-started/locally/); the driver's
   `CUDA Version` (step 0) is the highest it supports.
 - If `python3 -m venv` fails, the server needs `python3-venv` (ask the admin).
@@ -123,22 +125,20 @@ Then stop it with Ctrl+C.
 
 ## Step 5: Run it as a service
 
-`deploy/systemd/iseg-api-local.service` is the service file for a server
-without Slurm (`iseg-api.service` is ailab26's, with Slurm). This makes Tensor
-2's copy from it, with this server's user, folder, GPU and port:
+`deploy/systemd/iseg-api.service` is a template; this fills in this server's
+user, group, folder, GPU and port:
 
 ```bash
 cd "$ISEG_APP"
-sed -e "s#/home/admin_ai/ai_apps/interactive_segmentation#$ISEG_APP#g" \
-    -e "s#admin_ai#$ISEG_USER#g" \
-    -e "s#ISEG_TRAIN_DEVICE=cuda:0#ISEG_TRAIN_DEVICE=$ISEG_GPU#" \
-    -e "s#8020#$ISEG_PORT#g" \
-    deploy/systemd/iseg-api-local.service > /tmp/iseg-api.service
+sed -e "s#@ISEG_USER@#$ISEG_USER#g" -e "s#@ISEG_GROUP@#$ISEG_GROUP#g" \
+    -e "s#@ISEG_APP@#$ISEG_APP#g" -e "s#@ISEG_GPU@#$ISEG_GPU#g" \
+    -e "s#@ISEG_PORT@#$ISEG_PORT#g" \
+    deploy/systemd/iseg-api.service > /tmp/iseg-api.service
 grep -E '^(User|Group|WorkingDirectory|Environment=ISEG|ExecStart)' /tmp/iseg-api.service
+grep -c '@ISEG_' /tmp/iseg-api.service       # must print 0
 ```
 
-Check the printed lines. `Group=` gets the user's name; if `id -gn
-$ISEG_USER` prints another group, put that one there. Then:
+Check the printed lines (no `@ISEG_` left, no empty value). Then:
 
 ```bash
 sudo cp /tmp/iseg-api.service /etc/systemd/system/iseg-api.service
@@ -188,10 +188,16 @@ address for users is `https://<server address>:<port>/`. Never serve it on
 journalctl -u iseg-api --no-pager | grep -A1 'setup token' | tail -1
 ```
 
-Open the address from step 6, enter the setup token, a username and a
-password of 12 or more characters, then set up two-step sign-in with an
-authenticator app and save the recovery codes (as on ailab26, step 7 there).
-Add the other accounts on the **Users** page.
+Open the address from step 6 (with a self-signed certificate the browser
+warns first; continue). Enter the setup token, a username and a password of
+12 or more characters.
+
+Every account then sets up two-step sign-in: scan the QR code with an
+authenticator app (Google or Microsoft Authenticator, Aegis, 2FAS, ...), type
+the 6-digit code it shows, and save the 10 recovery codes the page shows once.
+From then on, signing in needs the password and a code from the app. Add the
+other accounts on the **Users** page; each does the same at their first
+sign-in.
 
 ## Step 8: Check it end to end
 
@@ -207,21 +213,113 @@ Add the other accounts on the **Users** page.
 
    show the worker (run by `$ISEG_USER`) and its memory on the training GPU.
    Cancel it once to check that the worker ends and frees the GPU.
-3. For every screen and control: `deploy/e2e_check.sh` (set
-   `ISEG_TRAIN_DEVICE=$ISEG_GPU` before it, and `ISEG_E2E_PORT` if 8021 is
-   taken); setup as in ailab26.md, *Check everything end to end*. With no
-   `srun` on the server, its trainings run as local workers, like the
-   service's.
-
+3. For every screen and control: *Check everything end to end*, below.
 ## Running it
 
-Updates, logs, backups, password and two-step resets, and removal work as on
-ailab26 ([ailab26.md](ailab26.md), *Running it*), with `$ISEG_APP` as the app
-folder. Two differences:
+### Update to a new version
 
-- After a `git pull` that changed `deploy/systemd/iseg-api-local.service`, redo
-  step 5 rather than copying the file as it is.
-- Training logs are only in `data/models/logs/` (there are no Slurm logs).
+```bash
+cd "$ISEG_APP"
+git pull
+SAM2_BUILD_CUDA=0 .venv/bin/pip install --no-build-isolation -r requirements-server.txt
+sudo systemctl restart iseg-api
+```
+
+- If the frontend changed (`frontend/` in the pull), make a new bundle on the
+  PC (`.\deploy\pack.ps1`) and unpack it again (step 3).
+- If `deploy/systemd/iseg-api.service` changed, redo step 5.
+- A restart cancels a training in progress; it shows as interrupted, so
+  restart when the Models tab shows none running.
+
+### Check everything end to end
+
+`deploy/e2e_check.sh` goes through every screen and control in a real
+(headless) browser: accounts, projects of all five task types, classes,
+uploads, assignment, every labelling tool, quick segment with every model
+and ensemble, training of each kind on the GPU (and a cancel), auto-labelling,
+exports, settings and the audit log. It starts its own server instance on
+port 8021 with an empty data folder in `/tmp`, so live users and data are not
+touched. It needs Playwright, once, in its own environment:
+
+```bash
+python3 -m venv ~/iseg-e2e
+~/iseg-e2e/bin/pip install playwright
+~/iseg-e2e/bin/python -m playwright install chromium
+```
+
+Then, from the app folder (about 30 minutes, most of it training):
+
+```bash
+ISEG_TRAIN_DEVICE=$ISEG_GPU deploy/e2e_check.sh    # or --no-train to skip the GPU trainings
+```
+
+Set `ISEG_E2E_PORT` if 8021 is taken. It prints PASS / FAIL / SKIP for each
+check and where the report is; each failure has a screenshot next to the
+report.
+
+### Where the logs are
+
+| What | Where |
+| --- | --- |
+| The app (requests, startup, setup token) | `journalctl -u iseg-api -f` |
+| Who did what, in the app | **Audit log** page (admins) |
+| One training run | `data/models/logs/project_<p>_model_<m>.log` |
+| Apache (option A) | `/var/log/apache2/` |
+
+### Back up
+
+Everything that can't be recreated is in `data/`: the database, the uploaded
+images and the trained models.
+
+```bash
+cd "$ISEG_APP"
+mkdir -p ~/backups
+.venv/bin/python -c "import sqlite3; s = sqlite3.connect('data/labelling.db'); d = sqlite3.connect('$HOME/backups/iseg-$(date +%F).db'); s.backup(d); d.close()"
+tar -czf ~/backups/iseg-files-$(date +%F).tar.gz data/items data/models
+```
+
+The database copy is consistent while the app runs. The images may be health
+data: keep backups as private as the server.
+
+`data/totp.key` encrypts every account's authenticator key in the database;
+the commands above leave it out on purpose, so a backup alone cannot be used
+to make sign-in codes. Keep one copy of it apart from the backups (for
+example on the admin's own encrypted storage). Without it, a restored
+database still works, but every account must set up two-step sign-in again
+(`tools/reset_2fa.py` below, once per account).
+
+### A forgotten admin password
+
+```bash
+cd "$ISEG_APP"
+.venv/bin/python tools/reset_password.py <username>
+```
+
+### A lost phone
+
+Someone who lost their phone signs in with one of their recovery codes and
+then sets the app up again from a new phone after a reset (below), or makes
+new recovery codes on their **Account** page (click their name, top right)
+if they still have the app. Someone who has lost both the app and the codes
+needs a reset from the server console; they set up the app again at their
+next sign-in:
+
+```bash
+cd "$ISEG_APP"
+.venv/bin/python tools/reset_2fa.py <username>
+```
+
+### Remove it
+
+```bash
+sudo systemctl disable --now iseg-api
+sudo rm /etc/systemd/system/iseg-api.service
+sudo systemctl daemon-reload
+```
+
+With option A, also delete the `/iseg/` lines from the Apache site,
+`configtest` and `reload`. The app folder, with `data/`, stays until you
+delete it.
 
 ## Troubleshooting
 

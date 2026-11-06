@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Read-only survey of the lab server before installing the labelling app
-# behind Apache, with training as Slurm jobs. It changes nothing, submits no
+# Read-only survey of a server before installing the labelling app on it
+# (deploy/tensor2.md, step 0). It changes nothing, submits no
 # Slurm job and never prompts: sudo is only ever used as `sudo -n`, which
 # fails quietly instead of asking.
 #
@@ -65,11 +65,8 @@ command -v ufw >/dev/null && (sudo -n ufw status 2>/dev/null || echo "ufw: statu
 sec "RUNNING SERVICES"
 systemctl list-units --type=service --state=running --no-pager --plain --no-legend | awk '{print $1}'
 
-sec "EXISTING APPS (how MAS is set up)"
-ls -la /home/admin_ai/ai_apps 2>&1
-systemctl cat mas-api --no-pager 2>&1 | grep -E '^(\[|User|Group|WorkingDirectory|ExecStart|Environment|EnvironmentFile|Restart)' | nosecrets
-grep -hE '^(MAS_GPU_LAUNCHER|MAS_SLURM|MAS_LLM|CUDA|WHISPER_DEVICE|API_)' \
-  /home/admin_ai/ai_apps/multilingual_audio_summary/.env 2>/dev/null | nosecrets
+sec "EXISTING APPS"
+ls -la ~/ai_apps 2>&1
 systemctl list-units --no-pager --plain --no-legend 'actions.runner*' 2>/dev/null | awk '{print $1, $3, $4}'
 
 sec "APP PROCESSES"
