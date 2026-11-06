@@ -99,7 +99,8 @@ Every line must say `OK`. That only shows the copy arrived intact:
 against the hashes in `docs/compliance/model-register.md` as well:
 
 ```bash
-grep -oE '`[^`]+\.pth?`.*`[0-9a-f]{64}`' docs/compliance/model-register.md \
+sed -n '/^## Checkpoints/,/^### /p' docs/compliance/model-register.md \
+  | grep -oE '`[^`]+\.pth?`.*`[0-9a-f]{64}`' \
   | sed -E 's/^`([^`]+)`.*`([0-9a-f]{64})`.*/\2  \1/' \
   | (cd model_weights && sha256sum -c)
 ```

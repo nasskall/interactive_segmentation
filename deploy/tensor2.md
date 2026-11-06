@@ -95,7 +95,8 @@ On Tensor 2:
 cd "$ISEG_APP"
 tar -xzf ~/iseg-bundle.tar.gz
 (cd model_weights && sha256sum -c SHA256SUMS)
-grep -oE '`[^`]+\.pth?`.*`[0-9a-f]{64}`' docs/compliance/model-register.md \
+sed -n '/^## Checkpoints/,/^### /p' docs/compliance/model-register.md \
+  | grep -oE '`[^`]+\.pth?`.*`[0-9a-f]{64}`' \
   | sed -E 's/^`([^`]+)`.*`([0-9a-f]{64})`.*/\2  \1/' \
   | (cd model_weights && sha256sum -c)
 ```

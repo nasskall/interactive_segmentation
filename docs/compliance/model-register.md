@@ -27,7 +27,22 @@ without human review.
 | SAM ViT-B | `sam_vit_b_01ec64.pth` | `ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912` | Meta, `segment-anything` model zoo | Apache 2.0 | Library installed from Meta's GitHub at a pinned commit. |
 | SAM 2.1 Hiera-Tiny | `sam2.1_hiera_tiny.pt` | `7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69` | Meta, `dl.fbaipublicfiles.com/segment_anything_2/092824/` | Apache 2.0 | Library installed from Meta's GitHub at a pinned commit (the PyPI `sam2` package is a third-party upload and is not used). |
 
-**Ensembles** combine 2 to 4 of the checkpoints above (default fusion
+### Benchmark-only checkpoints
+
+Used only by the research benchmarks in `tools/` (`tools/setup_benchmarks.sh`
+downloads them and checks these hashes; `tools/run_isic_benchmarks.sh` runs
+them). The web server never loads them, and they do not go in
+`model_weights/`: they live in the side folder `../external/`, next to the
+pinned clone of each model's code. Their code and licences are recorded in
+`THIRD_PARTY_NOTICES.md`.
+
+| Model | File | SHA-256 | Source | Licence | Notes |
+|---|---|---|---|---|---|
+| IMIS-Net ViT-B | `IMIS-Bench/ckpt/IMISNet-B.pth` | `1dd95d16dc359115463f8101d697f8443cb3b8dc359e3aa38e79f317bf1cb84a` | Authors' upload, `huggingface.co/1Junlong/IMIS-Net`, revision `c3d2edd`; code `uni-medical/IMIS-Bench` at `f4519c0`, run unmodified | Checkpoint Apache 2.0 (model card at that revision); the code repository states no licence | Click and box baseline. Its training data includes ISIC 2018, so its scores on the ISIC 2018 test set may be optimistic; the challenge-disjoint IMA++ test set is the fair comparison. Its text encoder uses the CLIP ViT-B/32 tokenizer files from `huggingface.co/openai/clip-vit-base-patch32` (revision `3d74acf`), pinned by hash in the setup script. |
+| MedSAM ViT-B | `MedSAM/work_dir/MedSAM/medsam_vit_b.pth` | `34b34b78c1d18cb8c6bf84cf9c00e135d6d6c965699f3c0e31ef1bc9dcb5be74` | Authors' release (Google Drive folder linked from the README of `bowang-lab/MedSAM`, commit `d71e8a1`) | Code Apache 2.0; no separate licence stated for the checkpoint | Box prompts only (trained with boxes). Its training data may include ISIC images; same caveat as IMIS-Net. Loaded with `weights_only=True`. |
+| RClicks clickability model | `rclicks/ckpt/clickability_model.pth` | `487beaddd351cd7045170234b0e719e111e80f73ab7055c523fde70b21f96960` | Authors' `CLICKABILITY_CHECKPOINTS.zip` (Google Drive folder linked from the README of `emb-ai/rclicks`, commit `e20bf76`); only this file is extracted | Code MIT; no separate licence stated for the checkpoint | Not a segmentation model: it predicts where people click, to sample realistic clicks for the click benchmarks. |
+
+**Ensembles** combine 2 to 4 of the checkpoints in the first table (default fusion
 STAPLE, no test-time augmentation). An ensemble's provenance records every
 member's file and SHA-256 plus the fusion method.
 
