@@ -216,6 +216,8 @@ images, and *Mark done & next* jumps to the next unfinished one.
 - **On the lab server** (Ubuntu, Apache): [deploy/ailab26.md](deploy/ailab26.md)
   installs it at `https://<server>/iseg/` behind the existing Apache site,
   as a systemd service, with every training on one GPU of the server.
+  [deploy/tensor2.md](deploy/tensor2.md) does the same on the Tensor 2
+  server, behind Apache or with uvicorn's own HTTPS.
 - **Where training runs:** each training is a separate worker process
   (`python -m server.labelling.train_worker`), a child of the server, one at
   a time; its output is kept in `data/models/logs/`, and Cancel stops it.
