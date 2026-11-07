@@ -1,0 +1,37 @@
+# Interactive labelling on tensor1 (tensor1.cbml-unipi.gr), behind the
+# server's Traefik at https://tensor1.cbml-unipi.gr/iseg/ (deploy/tensor1/iseg.yaml).
+# uvicorn listens only on 172.19.0.1, the host's address on Traefik's Docker
+# network "proxy", so only Traefik reaches it. Clicks and Auto-label run on
+# the CPU; every model training runs as a child worker process on GPU 1
+# (GPU 0 is used by another app).
+#
+#   sudo cp deploy/tensor1/iseg-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now iseg-api
+[Unit]
+Description=Interactive labelling (uvicorn on 172.19.0.1:8020, behind Traefik at /iseg/)
+# The proxy network's address exists only once Docker is up.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nkallipolitis
+Group=nkallipolitis
+WorkingDirectory=/home/nkallipolitis/interactive_segmentation
+Environment=PYTHONUNBUFFERED=1
+# Clicks and the training worker use the CPU too; leave cores for the server's other work.
+Environment=OMP_NUM_THREADS=8
+Environment=MKL_NUM_THREADS=8
+Environment=ISEG_TRAIN_DEVICE=cuda:1
+# Trust X-Forwarded-For / X-Forwarded-Proto only from Traefik's network, so
+# the audit log and the sign-in lockout see the real client address.
+Environment=FORWARDED_ALLOW_IPS=172.19.0.0/16
+# One process only: sessions, loaded models and the training queue live in memory.
+ExecStart=/home/nkallipolitis/interactive_segmentation/.venv/bin/python -m server.main --cpu --host 172.19.0.1 --port 8020
+Restart=always
+RestartSec=5
+# Stopping kills the service's whole cgroup, the training worker included.
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

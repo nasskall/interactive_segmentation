@@ -369,7 +369,8 @@ export default function Workspace({ itemId, me }: Props) {
       if ((e.ctrlKey || e.metaKey) && k === 'z') {
         e.preventDefault();
         if (session?.can_undo) sessionAction('Undo', api.undo);
-      } else if ((e.key === 'Enter' || e.key === ' ') && session?.has_incomplete_object) {
+      } else if (e.key === 'Enter' && session?.has_incomplete_object) {
+        // Enter only: Space is held to pan, so it must not save a half-finished object.
         e.preventDefault();
         saveAssisted();
       } else if (e.key === 'Escape') {
@@ -381,7 +382,10 @@ export default function Workspace({ itemId, me }: Props) {
         const c = classes[Number(e.key) - 1];
         if (c) pickClass(c);
       } else if (k === 'b' && item?.kind === 'pair') {
+        // Leave Compare too: it always labels the after image, so switching to
+        // before while the divider stays up would label an image you cannot see.
         setRole((r) => (r === 'after' ? 'before' : 'after'));
+        setSwipe(null);
       } else if (k === ']' || e.key === 'PageDown') {
         if (siblings[index + 1]) go(href.item(siblings[index + 1].id));
       } else if (k === '[' || e.key === 'PageUp') {
@@ -455,7 +459,7 @@ export default function Workspace({ itemId, me }: Props) {
               const active = isClassification ? tagged.has(c.id) : c.id === classId;
               return (
                 <li key={c.id}>
-                  <button className={`class-btn${active ? ' active' : ''}`}
+                  <button className={`class-btn${active ? ' active' : ''}`} aria-pressed={active}
                           disabled={busy || !usable} onClick={() => pickClass(c)}
                           title={usable ? undefined : `Not drawable with the ${tool} tool`}>
                     <span className="swatch" style={{ background: c.color }} />

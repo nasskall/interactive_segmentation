@@ -264,7 +264,8 @@ export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: Pr
             <thead>
               <tr>
                 {admin && <th className="check-cell"><input type="checkbox" checked={allShownSelected}
-                                                           onChange={toggleAll} title="Select all shown" /></th>}
+                                                           onChange={toggleAll} title="Select all shown"
+                                                           aria-label="Select all shown" /></th>}
                 <th>Name</th><th>Size</th><th>Labels</th><th>Status</th>
                 {admin && <th>Assigned to</th>}
               </tr>
@@ -274,6 +275,7 @@ export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: Pr
                 <tr key={i.id} className={selected.has(i.id) ? 'selected' : ''}
                     onClick={() => (admin ? toggle(i.id) : go(href.item(i.id)))}>
                   {admin && <td className="check-cell"><input type="checkbox" checked={selected.has(i.id)}
+                                                             aria-label={`Select ${i.name}`}
                                                              onChange={() => toggle(i.id)}
                                                              onClick={(e) => e.stopPropagation()} /></td>}
                   <td><a href={href.item(i.id)} onClick={(e) => e.stopPropagation()}>{i.name}</a>

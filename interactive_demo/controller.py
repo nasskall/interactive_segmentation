@@ -11,6 +11,18 @@ from isegm.adaptation import (
 )
 from isegm.adaptation.lora import collect_lora_state, load_lora_state
 
+# Prompt grid of the SAM / SAM 2 automatic mask generator (points per side).
+# The libraries' 32 x 32 default takes 30-40 s per image on a CPU while the
+# shared model is locked for everyone; 16 x 16 is a quarter of the prompts.
+AUTO_MASK_POINTS_PER_SIDE_GPU = 32
+AUTO_MASK_POINTS_PER_SIDE_CPU = 16
+
+
+def auto_mask_points_per_side(device) -> int:
+    return (AUTO_MASK_POINTS_PER_SIDE_CPU if str(device).startswith('cpu')
+            else AUTO_MASK_POINTS_PER_SIDE_GPU)
+
+
 # A candidate mask that covers more than this share of the image's border
 # pixels is treated as background (e.g. the skin surrounding a lesion).
 BACKGROUND_BORDER_FRACTION = 0.25
@@ -380,10 +392,12 @@ class InteractiveController:
         try:
             if mt == 'sam':
                 from segment_anything import SamAutomaticMaskGenerator
-                generator = SamAutomaticMaskGenerator(self.net)
+                generator = SamAutomaticMaskGenerator(
+                    self.net, points_per_side=auto_mask_points_per_side(self.device))
             else:  # sam2
                 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-                generator = SAM2AutomaticMaskGenerator(self.net)
+                generator = SAM2AutomaticMaskGenerator(
+                    self.net, points_per_side=auto_mask_points_per_side(self.device))
         except ImportError as exc:
             return {'ok': False, 'mode_used': 'auto_mask',
                     'reason': f'import failed: {exc}'}

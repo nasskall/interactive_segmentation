@@ -1085,7 +1085,13 @@ def build_router(data_dir: Path, manager: ModelManager) -> tuple[APIRouter, Labe
     def train_project_model(project_id: int, body: TrainIn, user=Depends(admin_user),
                             conn=Depends(get_db, scope='function')):
         """Start training a project model in the background."""
-        get_project(conn, project_id, user)
+        p = get_project(conn, project_id, user)
+        if not {'mask', 'polygon'} & set(ALLOWED_LABEL_TYPES[p['task_type']]):
+            raise HTTPException(400, 'Project models learn masks and polygons; '
+                                     f"{p['task_type']} projects have none to train on")
+        if body.kind != 'interactive' and p['task_type'] == 'change_detection':
+            raise HTTPException(400, 'Automatic models and students learn from single images; '
+                                     'change detection projects train interactive models only')
         bases = base_models()
         if not bases:
             raise HTTPException(400, 'No SAM 2 checkpoint in the weights folder')
