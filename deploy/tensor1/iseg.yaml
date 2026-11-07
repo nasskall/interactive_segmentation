@@ -1,0 +1,36 @@
+# Traefik route for the interactive labelling app on tensor1, at
+# https://tensor1.cbml-unipi.gr/iseg/ (certificate from the server's "le"
+# resolver). Traefik's file provider reads /apps/traefik/dynamic/ and picks
+# up changes without a restart:
+#
+#   sudo cp deploy/tensor1/iseg.yaml /apps/traefik/dynamic/
+http:
+  routers:
+    iseg-router:
+      rule: "Host(`tensor1.cbml-unipi.gr`) && (Path(`/iseg`) || PathPrefix(`/iseg/`))"
+      service: iseg-service
+      middlewares:
+        - iseg-slash
+        - iseg-strip
+      tls:
+        certResolver: le
+
+  middlewares:
+    # /iseg without the slash would load the page with broken links.
+    iseg-slash:
+      redirectRegex:
+        regex: "^(https?://[^/]+/iseg)$"
+        replacement: "${1}/"
+        permanent: true
+    # The app serves at its root and finds /iseg/ itself in the browser.
+    iseg-strip:
+      stripPrefix:
+        prefixes:
+          - "/iseg"
+
+  services:
+    iseg-service:
+      loadBalancer:
+        servers:
+          # uvicorn on the host, on the proxy network's gateway address only.
+          - url: "http://172.19.0.1:8020"

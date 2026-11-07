@@ -98,10 +98,16 @@ class LoadModelIn(BaseModel):
 
 
 def create_app(manager: ModelManager, static_dir: Optional[Path] = None,
-               data_dir: Optional[Path] = None) -> FastAPI:
+               data_dir: Optional[Path] = None, api_docs: bool = True) -> FastAPI:
     """``data_dir`` enables labelling projects (database + uploaded images);
-    without it only the stateless segmentation endpoints are served."""
+    without it only the stateless segmentation endpoints are served.
+    ``api_docs`` serves the interactive API docs (/docs, /redoc) and the
+    schema (/openapi.json); a public server leaves them off, since they map
+    every endpoint for anyone who has not signed in."""
     app = FastAPI(title='Interactive Segmentation API', version='1.0',
+                  docs_url='/docs' if api_docs else None,
+                  redoc_url='/redoc' if api_docs else None,
+                  openapi_url='/openapi.json' if api_docs else None,
                   dependencies=[Depends(remember_client_ip)])
     app.state.manager = manager
     app.state.labelling = None

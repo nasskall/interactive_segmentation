@@ -135,6 +135,12 @@ def test_finish_object_does_not_push_when_recording_off(
 # auto_segment routing
 # ---------------------------------------------------------------------------
 
+def test_auto_mask_grid_is_smaller_on_cpu():
+    from interactive_demo.controller import auto_mask_points_per_side
+    assert auto_mask_points_per_side('cpu') == 16
+    assert auto_mask_points_per_side('cuda:0') == 32
+
+
 def test_auto_segment_no_image_returns_failure(fresh_ritm, device):
     ctrl = _ctrl(fresh_ritm, device)
     res = ctrl.auto_segment(mode='auto')

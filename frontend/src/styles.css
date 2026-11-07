@@ -300,8 +300,12 @@ legend { font-size: 13px; margin-bottom: 6px; }
 
 .task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
 .task-option { border: 1px solid var(--border); border-radius: 8px; padding: 10px; cursor: pointer;
-               gap: 2px; }
-.task-option input { display: none; }
+               gap: 2px; position: relative; }
+/* Hidden from view but not from the keyboard or screen readers (display: none removed
+   the radios from both): Tab reaches the group, arrow keys pick a task. */
+.task-option input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0;
+                     pointer-events: none; }
+.task-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .task-option.active { border-color: var(--accent); background: var(--hover);
                       box-shadow: inset 0 0 0 1px var(--accent); }
 

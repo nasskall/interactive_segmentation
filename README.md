@@ -117,8 +117,13 @@ python -m pip install segmentation-models-pytorch==0.5.0 onnx==1.23.2 onnxscript
 cd frontend && npm install && npm run build && cd ..
 
 # Serve API + built frontend at http://127.0.0.1:8000 (API docs at /docs)
-python -m server.main            # --cpu, --host, --port
+python -m server.main            # --cpu, --host, --port, --api-docs
 ```
+
+The API docs (`/docs`, `/redoc`) and the schema (`/openapi.json`) are served
+only when the server listens on 127.0.0.1 / localhost. On any other address
+they are off, so a public server does not list its endpoints to visitors who
+have not signed in; `--api-docs` turns them back on.
 
 For frontend development, run `python -m server.main` and `npm run dev` in
 `frontend/` side by side. Vite serves the UI with hot reload on port 5173 and
@@ -217,6 +222,11 @@ images, and *Mark done & next* jumps to the next unfinished one.
   installs it on the Tensor 2 server as a systemd service (from the template
   `deploy/systemd/iseg-api.service`), behind Apache at `https://<server>/iseg/`
   or with uvicorn's own HTTPS, with every training on one GPU of the server.
+  The running instance is on tensor1 at `https://tensor1.cbml-unipi.gr/iseg/`,
+  behind the server's Traefik: [deploy/tensor1/iseg-api.service](deploy/tensor1/iseg-api.service)
+  (uvicorn on Traefik's Docker network only, clicks on the CPU, training on
+  GPU 1) and the route [deploy/tensor1/iseg.yaml](deploy/tensor1/iseg.yaml);
+  the install steps are those of Tensor 2 with these two files.
 - **Where training runs:** each training is a separate worker process
   (`python -m server.labelling.train_worker`), one at a time; its output is
   kept in `data/models/logs/`, and Cancel stops it. Clicks and Auto-label

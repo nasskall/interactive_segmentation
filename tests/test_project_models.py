@@ -186,6 +186,19 @@ def test_training_needs_enough_objects(admin):
     assert r.status_code == 400 and 'at least 10' in r.json()['detail']
 
 
+def test_training_needs_a_project_with_masks_or_polygons(admin):
+    for task in ('classification', 'detection'):
+        p = _project(admin, task)
+        r = admin.post(f"/api/projects/{p['id']}/models", json={'kind': 'interactive'})
+        assert r.status_code == 400 and 'have none to train on' in r.json()['detail']
+    p = _project(admin, 'change_detection')
+    for kind in ('automatic', 'student'):
+        r = admin.post(f"/api/projects/{p['id']}/models", json={'kind': kind})
+        assert r.status_code == 400 and 'interactive models only' in r.json()['detail']
+    r = admin.post(f"/api/projects/{p['id']}/models", json={'kind': 'interactive'})
+    assert r.status_code == 400 and 'at least 10' in r.json()['detail']   # the usual check
+
+
 # ── training runs ─────────────────────────────────────────────────────────
 
 def test_training_run_is_registered_with_hashes_and_scores(admin):

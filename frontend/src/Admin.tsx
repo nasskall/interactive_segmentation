@@ -673,7 +673,10 @@ export function ModelsPanel({ project, onChanged }: {
       <div className="card form">
         <h2 className="form-title">Train a model for this project</h2>
         <div className="segmented">
-          {(['interactive', 'automatic', 'student'] as const).map((k) => (
+          {/* Automatic models and students learn from single images, not before/after pairs. */}
+          {(project.task_type === 'change_detection'
+            ? ['interactive'] as const
+            : ['interactive', 'automatic', 'student'] as const).map((k) => (
             <button key={k} className={kind === k ? 'active' : ''}
                     onClick={() => { setKind(k); setSteps(''); }}>{KIND_LABELS[k]}</button>
           ))}
