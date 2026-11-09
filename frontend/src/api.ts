@@ -37,6 +37,8 @@ export interface ModelRef {
 export interface ModelInfo {
   model_types: string[];
   checkpoints: string[];
+  /** The one model type each checkpoint loads as (null: its name says none). */
+  checkpoint_types: Record<string, string | null>;
   current: {
     model_type: string;
     checkpoint: string | null;
@@ -71,7 +73,25 @@ export interface User {
   display_name: string;
   role: 'admin' | 'labeller';
   active: boolean;
+  two_factor: boolean;
+  recovery_codes_left?: number;   // from /auth/me only
 }
+
+/** After the password: set up the authenticator ('enrol') or give a code. */
+export interface LoginStep {
+  second_factor: 'code' | 'enrol';
+  challenge: string;
+  user: { username: string; display_name: string };
+}
+
+export interface SignedIn {
+  token: string;
+  user: User;
+  recovery_codes?: string[];       // after setting up the authenticator, shown once
+  recovery_codes_left?: number;    // after signing in with a code
+}
+
+export interface Enrolment { secret: string; uri: string; qr: string; issuer: string; account: string }
 
 export interface Project {
   id: number;
@@ -390,9 +410,16 @@ export const api = {
   // accounts
   authStatus: () => request<{ needs_setup: boolean }>('/auth/status'),
   setup: (body: { setup_token: string; username: string; password: string; display_name: string }) =>
-    request<{ token: string; user: User }>('/auth/setup', json('POST', body)),
+    request<LoginStep>('/auth/setup', json('POST', body)),
   login: (username: string, password: string) =>
-    request<{ token: string; user: User }>('/auth/login', json('POST', { username, password })),
+    request<LoginStep>('/auth/login', json('POST', { username, password })),
+  enrol: (challenge: string) => request<Enrolment>('/auth/2fa/enrol', json('POST', { challenge })),
+  activate: (challenge: string, code: string) =>
+    request<SignedIn>('/auth/2fa/activate', json('POST', { challenge, code })),
+  verifyCode: (challenge: string, code: string) =>
+    request<SignedIn>('/auth/login/verify', json('POST', { challenge, code })),
+  renewRecoveryCodes: (code: string) =>
+    request<{ recovery_codes: string[] }>('/auth/2fa/recovery-codes', json('POST', { code })),
   logout: () => request<void>('/auth/logout', json('POST')),
   me: () => request<User>('/auth/me'),
   listUsers: () => request<User[]>('/users'),

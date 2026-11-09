@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { AssignBar, ClassesEditor, ExportPanel, ModelsPanel, NewProject, ProjectSettings, TeamProgress,
          UploadPanel } from './Admin';
-import { api, MIN_PASSWORD, setToken, TASK_LABELS, type Item, type ItemStatus, type Progress, type Project,
-         type User } from './api';
+import { api, MIN_PASSWORD, TASK_LABELS, type Item, type ItemStatus, type LoginStep, type Progress,
+         type Project, type User } from './api';
 import { go, href, type ProjectTab } from './lib';
 
 // ── sign-in ────────────────────────────────────────────────────────────────
 
-export function Login({ onSignedIn }: { onSignedIn: (u: User) => void }) {
+export function Login({ onStep }: { onStep: (s: LoginStep) => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -18,9 +18,7 @@ export function Login({ onSignedIn }: { onSignedIn: (u: User) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.login(username, password);
-      setToken(r.token);
-      onSignedIn(r.user);
+      onStep(await api.login(username, password));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -37,12 +35,11 @@ export function Login({ onSignedIn }: { onSignedIn: (u: User) => void }) {
                             onChange={(e) => setPassword(e.target.value)} /></label>
       {error && <p className="error-text">{error}</p>}
       <button className="primary" disabled={busy || !username || !password}>Sign in</button>
-      <p className="meta">Or use <a href={href.quick()}>Quick segment</a> without an account.</p>
     </form>
   );
 }
 
-export function Setup({ onSignedIn }: { onSignedIn: (u: User) => void }) {
+export function Setup({ onStep }: { onStep: (s: LoginStep) => void }) {
   const [form, setForm] = useState({ setup_token: '', username: '', display_name: '',
                                      password: '' });
   const [error, setError] = useState<string | null>(null);
@@ -55,9 +52,7 @@ export function Setup({ onSignedIn }: { onSignedIn: (u: User) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.setup({ ...form, setup_token: form.setup_token.trim() });
-      setToken(r.token);
-      onSignedIn(r.user);
+      onStep(await api.setup({ ...form, setup_token: form.setup_token.trim() }));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -269,7 +264,8 @@ export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: Pr
             <thead>
               <tr>
                 {admin && <th className="check-cell"><input type="checkbox" checked={allShownSelected}
-                                                           onChange={toggleAll} title="Select all shown" /></th>}
+                                                           onChange={toggleAll} title="Select all shown"
+                                                           aria-label="Select all shown" /></th>}
                 <th>Name</th><th>Size</th><th>Labels</th><th>Status</th>
                 {admin && <th>Assigned to</th>}
               </tr>
@@ -279,6 +275,7 @@ export function ProjectPage({ projectId, tab, me }: { projectId: number; tab: Pr
                 <tr key={i.id} className={selected.has(i.id) ? 'selected' : ''}
                     onClick={() => (admin ? toggle(i.id) : go(href.item(i.id)))}>
                   {admin && <td className="check-cell"><input type="checkbox" checked={selected.has(i.id)}
+                                                             aria-label={`Select ${i.name}`}
                                                              onChange={() => toggle(i.id)}
                                                              onClick={(e) => e.stopPropagation()} /></td>}
                   <td><a href={href.item(i.id)} onClick={(e) => e.stopPropagation()}>{i.name}</a>

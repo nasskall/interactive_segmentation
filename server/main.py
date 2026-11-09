@@ -1,12 +1,16 @@
 """Start the REST backend with the default RITM checkpoint.
 
     python -m server.main [--host 127.0.0.1] [--port 8000] [--cpu]
-                          [--ssl-certfile cert.pem --ssl-keyfile key.pem]
+                          [--ssl-certfile cert.pem --ssl-keyfile key.pem] [--api-docs]
 
 Serving beyond this machine (--host other than 127.0.0.1 / localhost)
 should use HTTPS: pass a certificate and key, e.g. from the lab's internal
 CA. Without them the server still starts but warns, because passwords and
 tokens would cross the network in clear text.
+
+The interactive API docs (/docs) and the schema (/openapi.json) are served
+only on 127.0.0.1 / localhost unless --api-docs is given, so a public
+server does not list its endpoints to visitors who have not signed in.
 """
 
 import argparse
@@ -34,11 +38,15 @@ def main():
                         help='Where labelling projects and their images are stored.')
     parser.add_argument('--ssl-certfile', type=Path, help='TLS certificate (PEM) for HTTPS.')
     parser.add_argument('--ssl-keyfile', type=Path, help='TLS private key (PEM) for HTTPS.')
+    parser.add_argument('--api-docs', action='store_true',
+                        help='Serve /docs and /openapi.json also when listening beyond '
+                             'this machine (always served on 127.0.0.1 / localhost).')
     args = parser.parse_args()
     if (args.ssl_certfile is None) != (args.ssl_keyfile is None):
         parser.error('--ssl-certfile and --ssl-keyfile go together')
     tls = args.ssl_certfile is not None
-    if not tls and args.host not in ('127.0.0.1', 'localhost', '::1'):
+    local = args.host in ('127.0.0.1', 'localhost', '::1')
+    if not tls and not local:
         print(f'WARNING: serving on {args.host} over plain HTTP. Passwords and tokens will '
               'cross the network unencrypted; pass --ssl-certfile/--ssl-keyfile.',
               file=sys.stderr, flush=True)
@@ -50,14 +58,16 @@ def main():
     model._model_type = 'ritm'
 
     manager = ModelManager(model, device, 'RITM', DEFAULT_CHECKPOINT, WEIGHTS_DIR)
-    app = create_app(manager, static_dir=ROOT / 'frontend' / 'dist', data_dir=args.data_dir)
+    app = create_app(manager, static_dir=ROOT / 'frontend' / 'dist', data_dir=args.data_dir,
+                     api_docs=local or args.api_docs)
     launcher = app.state.labelling.training.launcher
     print(f"Project-model training: {' '.join(launcher) if launcher else 'local worker process'} "
           '(ISEG_TRAIN_LAUNCHER)', flush=True)
     if app.state.labelling.setup_token:
         print('\nNo users yet. Create the first admin with this one-time setup token:\n'
               f'    {app.state.labelling.setup_token}\n'
-              'e.g. POST /api/auth/setup (see /docs). It changes on every restart.\n',
+              'e.g. POST /api/auth/setup (see /docs on localhost). It changes on every '
+              'restart.\n',
               flush=True)
     uvicorn.run(app, host=args.host, port=args.port,
                 ssl_certfile=str(args.ssl_certfile) if tls else None,

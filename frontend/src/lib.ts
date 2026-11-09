@@ -6,7 +6,7 @@ import { fetchImageUrl, type Rle } from './api';
 // ── routing ────────────────────────────────────────────────────────────────
 // Routes live in the URL hash so the backend's static file server needs no
 // rewrites: #/ projects · #/projects/3[/classes|team|models|export|settings] · #/items/12
-// workspace · #/users · #/audit · #/quick
+// workspace · #/users · #/audit · #/quick · #/account
 
 export type ProjectTab = 'items' | 'classes' | 'team' | 'models' | 'export' | 'settings';
 
@@ -16,7 +16,8 @@ export type Route =
   | { page: 'item'; id: number }
   | { page: 'users' }
   | { page: 'audit' }
-  | { page: 'quick' };
+  | { page: 'quick' }
+  | { page: 'account' };
 
 const TABS: ProjectTab[] = ['items', 'classes', 'team', 'models', 'export', 'settings'];
 
@@ -30,6 +31,7 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === 'audit') return { page: 'audit' };
   if (parts[0] === 'items' && parts[1]) return { page: 'item', id: Number(parts[1]) };
   if (parts[0] === 'quick') return { page: 'quick' };
+  if (parts[0] === 'account') return { page: 'account' };
   return { page: 'projects' };
 }
 
@@ -41,6 +43,7 @@ export const href = {
   audit: () => '#/audit',
   item: (id: number) => `#/items/${id}`,
   quick: () => '#/quick',
+  account: () => '#/account',
 };
 
 export function useRoute(): Route {

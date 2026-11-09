@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Set up everything the paper benchmarks need on a Linux GPU server, beside
-# the app's own venv (deploy/ailab26.md, step 2). Safe to re-run: files that
+# the app's own venv (deploy/tensor2.md, step 2). Safe to re-run: files that
 # exist and verify are kept, anything else is fetched again.
 #
 #   bash tools/setup_benchmarks.sh            # code, venvs, checkpoints
@@ -27,7 +27,7 @@ for a in "$@"; do
   case $a in --data) DATA=1 ;; --smoke) SMOKE=1 ;; *) echo "unknown option $a"; exit 2 ;; esac
 done
 [ -f tools/setup_benchmarks.sh ] || { echo "run from the repository root"; exit 1; }
-[ -x "$PY" ] || { echo "no app venv at $VENV (deploy/ailab26.md, step 2)"; exit 1; }
+[ -x "$PY" ] || { echo "no app venv at $VENV (deploy/tensor2.md, step 2)"; exit 1; }
 mkdir -p "$EXT" model_weights
 HASHES=model_weights/SHA256SUMS.benchmarks
 log() { printf '\n== %s\n' "$*"; }

@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# All benchmark runs for the ISIC experiments, submitted as a chain of
-# Slurm jobs (sbatch, one GPU each). Run from the repository root after
-# `bash tools/setup_benchmarks.sh --data --smoke` has set up the code,
-# checkpoints and datasets:
+# All benchmark runs for the ISIC experiments. Run from the repository root
+# after `bash tools/setup_benchmarks.sh --data --smoke` has set up the code,
+# checkpoints and datasets. Two ways to run them:
 #
-#   bash tools/run_isic_benchmarks.sh            # submit everything
-#   DRY=1 bash tools/run_isic_benchmarks.sh      # print the sbatch commands only
+#   slurm  a chain of Slurm jobs (sbatch, one GPU each, afterok dependencies)
+#   local  no Slurm: the same jobs one after another, in the foreground, on
+#          one GPU of this machine (GPU=<index>, default 0); several days in
+#          all, so start it in tmux or with nohup. A job whose dependency
+#          failed is skipped, the others still run. Re-running skips the jobs
+#          that finished (state in $LOGS/state/); delete a job's .done file
+#          there to run it again.
+#
+#   bash tools/run_isic_benchmarks.sh                   # slurm if sbatch exists, else local
+#   RUNNER=local GPU=1 bash tools/run_isic_benchmarks.sh
+#   nohup env RUNNER=local bash tools/run_isic_benchmarks.sh > benchmarks.log 2>&1 &
+#   DRY=1 bash tools/run_isic_benchmarks.sh             # print the jobs only
 #
 # Every model is scored on two test sets:
 #   isic   ISIC 2018 Task 1 test (1000); IMIS-Net and likely MedSAM trained on it
@@ -16,17 +25,26 @@ set -euo pipefail
 PY=.venv/bin/python
 DATA=datasets/isic2018_protocol
 EXP=experiments/isic
-LOGS=data/slurm/paper
+RUNNER=${RUNNER:-$(command -v sbatch >/dev/null && echo slurm || echo local)}
+case $RUNNER in
+  slurm) LOGS=data/slurm/paper ;;
+  local) LOGS=data/benchmarks/paper; export CUDA_VISIBLE_DEVICES=${GPU:-0} ;;
+  *) echo "RUNNER is slurm or local, not $RUNNER"; exit 2 ;;
+esac
 SEEDS="1 2 3"
 SLURM="--partition=main --cpus-per-task=4 --mem=32G"
 TESTSETS="isic:$DATA clean:datasets/clean_isic_test"
 IMIS=${IMIS_ROOT:-../external/IMIS-Bench}
 IMIS_PY=${IMIS_PY:-../external/imis-venv/bin/python}
 MEDSAM=${MEDSAM_CKPT:-../external/MedSAM/work_dir/MedSAM/medsam_vit_b.pth}
-mkdir -p "$EXP" "$LOGS" results/isic results/clean
+STATE=$LOGS/state
+mkdir -p "$EXP" "$LOGS" "$STATE" results/isic results/clean
 [ -n "${DRY:-}" ] || [ -f datasets/clean_isic_test/manifest.json ] || { echo "build datasets/clean_isic_test first"; exit 1; }
 
-submit() {   # submit <name> <time> <dependency or ""> <command...>
+# submit <name> <time> <dependency or ""> <command...>: prints the job's id,
+# which later jobs pass back as their dependency (ids joined with ':').
+submit() {
+  if [ "$RUNNER" = local ]; then run_local "$@"; return; fi
   local name=$1 time=$2 dep=$3; shift 3
   local args=(--parsable --job-name="isic-$name" --time="$time" --gres=gpu:1
               --output="$LOGS/%j-$name.out" --chdir="$PWD")
@@ -34,6 +52,35 @@ submit() {   # submit <name> <time> <dependency or ""> <command...>
   # shellcheck disable=SC2086
   if [ -n "${DRY:-}" ]; then echo "sbatch ${args[*]} $SLURM --wrap='$*'" >&2; echo "dry$RANDOM"
   else sbatch "${args[@]}" $SLURM --wrap="PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 $*"; fi
+}
+
+# Local runner: jobs run as they are submitted, and every job is submitted
+# after the jobs it depends on, so running them in order keeps the chain.
+# The id is the job name; $STATE/<id>.done marks a job that finished with 0.
+# No time limits.
+run_local() {
+  local id="isic-$1" dep=$3 d; shift 3
+  if [ -n "${DRY:-}" ]; then echo "[$id] after ${dep:-nothing}: $*" >&2; echo "$id"; return; fi
+  if [ -f "$STATE/$id.done" ]; then
+    echo "$(date '+%F %T') $id: done in an earlier run, skipped" >&2; echo "$id"; return
+  fi
+  for d in ${dep//:/ }; do
+    if [ ! -f "$STATE/$d.done" ]; then
+      echo "$(date '+%F %T') $id: skipped, $d did not finish" >&2
+      touch "$STATE/$id.failed"; echo "$id"; return
+    fi
+  done
+  echo "$(date '+%F %T') $id: running on GPU $CUDA_VISIBLE_DEVICES, log $LOGS/$id.out" >&2
+  local rc=0
+  PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 bash -c "$*" > "$LOGS/$id.out" 2>&1 || rc=$?
+  if [ "$rc" = 0 ]; then
+    rm -f "$STATE/$id.failed"; touch "$STATE/$id.done"
+    echo "$(date '+%F %T') $id: finished" >&2
+  else
+    touch "$STATE/$id.failed"
+    echo "$(date '+%F %T') $id: FAILED (exit $rc), see $LOGS/$id.out" >&2
+  fi
+  echo "$id"
 }
 
 # All evaluations of one model on every test set, chained with && .
@@ -173,4 +220,13 @@ for t in $TESTSETS; do
   fi
   submit "stats-$set" 1:00:00 "$dep" "$cmd" > /dev/null
 done
-echo "submitted; watch with: squeue -u \$USER"
+if [ -n "${DRY:-}" ]; then
+  echo "dry run ($RUNNER): nothing started"
+elif [ "$RUNNER" = slurm ]; then
+  echo "submitted; watch with: squeue -u \$USER"
+else
+  failed=$(find "$STATE" -name '*.failed' -printf '%f ' | sed 's/\.failed//g')
+  done_n=$(find "$STATE" -name '*.done' | wc -l)
+  echo "local run over: $done_n jobs done${failed:+; failed or skipped: $failed}"
+  [ -z "$failed" ]
+fi

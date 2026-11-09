@@ -117,8 +117,13 @@ python -m pip install segmentation-models-pytorch==0.5.0 onnx==1.23.2 onnxscript
 cd frontend && npm install && npm run build && cd ..
 
 # Serve API + built frontend at http://127.0.0.1:8000 (API docs at /docs)
-python -m server.main            # --cpu, --host, --port
+python -m server.main            # --cpu, --host, --port, --api-docs
 ```
+
+The API docs (`/docs`, `/redoc`) and the schema (`/openapi.json`) are served
+only when the server listens on 127.0.0.1 / localhost. On any other address
+they are off, so a public server does not list its endpoints to visitors who
+have not signed in; `--api-docs` turns them back on.
 
 For frontend development, run `python -m server.main` and `npm run dev` in
 `frontend/` side by side. Vite serves the UI with hot reload on port 5173 and
@@ -149,9 +154,9 @@ Main endpoints (all under `/api`):
 
 All of these need a signed-in account (see below), and a session is visible
 only to the account that opened it. Every editing call returns the full
-session state, including an RGBA overlay as a data URL. Sessions live in memory, at most 16 at a time with the least
-recently used dropped first. All sessions share one model, and requests run
-one at a time.
+session state, including an RGBA overlay as a data URL. Sessions live in
+memory, at most 16 at a time, with the least recently used dropped first.
+All sessions share one model, and requests run one at a time.
 
 ### Labelling projects
 
@@ -213,28 +218,39 @@ images, and *Mark done & next* jumps to the next unfinished one.
   held-out images. It auto-labels about ten times faster and, like every
   finished model, can be downloaded with a model card; a student's download
   also holds `model.onnx`, which runs with ONNX Runtime alone (no PyTorch).
-- **On the lab server** (Ubuntu, Apache, Slurm): [deploy/ailab26.md](deploy/ailab26.md)
-  installs it at `https://<server>/iseg/` behind the existing Apache site,
-  as a systemd service, with every training as a Slurm job on a GPU.
+- **On a server** (Ubuntu): [deploy/tensor2.md](deploy/tensor2.md)
+  installs it on the Tensor 2 server as a systemd service (from the template
+  `deploy/systemd/iseg-api.service`), behind Apache at `https://<server>/iseg/`
+  or with uvicorn's own HTTPS, with every training on one GPU of the server.
+  The running instance is on tensor1 at `https://tensor1.cbml-unipi.gr/iseg/`,
+  behind the server's Traefik: [deploy/tensor1/iseg-api.service](deploy/tensor1/iseg-api.service)
+  (uvicorn on Traefik's Docker network only, clicks on the CPU, training on
+  GPU 1) and the route [deploy/tensor1/iseg.yaml](deploy/tensor1/iseg.yaml);
+  the install steps are those of Tensor 2 with these two files.
 - **Where training runs:** each training is a separate worker process
   (`python -m server.labelling.train_worker`), one at a time; its output is
-  kept in `data/models/logs/`. On a Slurm cluster, start the server with
-  `ISEG_TRAIN_LAUNCHER=deploy/slurm_train.sh` and every training becomes one
-  Slurm job on one GPU (`srun --gres=gpu:1`); `ISEG_SLURM_ARGS` adds srun
-  options (e.g. `--partition=gpu --time=4:00:00`), `ISEG_SLURM_LOG_DIR` moves
-  the job logs (default `data/slurm`), and Cancel cancels the job. Clicks and
-  Auto-label stay in the server process. `ISEG_TRAIN_DEVICE` forces the
-  worker's device (default: the first GPU it sees, else the CPU).
+  kept in `data/models/logs/`, and Cancel stops it. Clicks and Auto-label
+  stay in the server process. By default the worker is a child process of
+  the server, and `ISEG_TRAIN_DEVICE` sets its device (e.g. `cuda:1`;
+  default: the first GPU it sees, else the CPU). On a Slurm cluster, start
+  the server with `ISEG_TRAIN_LAUNCHER=deploy/slurm_train.sh` and every
+  training becomes one Slurm job on one GPU (`srun --gres=gpu:1`);
+  `ISEG_SLURM_ARGS` adds srun options (e.g. `--partition=gpu --time=4:00:00`),
+  `ISEG_SLURM_LOG_DIR` moves the job logs (default `data/slurm`), and Cancel
+  cancels the job.
 
 On first start with an empty `data/`, the server prints a one-time setup
-token. Create the first admin with it via `POST /api/auth/setup`; every other
-call needs the `Authorization: Bearer <token>` header returned by setup or
-`POST /api/auth/login`.
+token. Create the first admin with it via `POST /api/auth/setup`. Sign-in has
+two steps: the password (`POST /api/auth/setup` or `/api/auth/login`) returns
+a short-lived ticket, and a code from an authenticator app turns it into a
+session (`POST /api/auth/2fa/enrol` and `/api/auth/2fa/activate` the first
+time, `POST /api/auth/login/verify` after that). Every other call needs the
+`Authorization: Bearer <token>` header that last step returns.
 
 ### Security and compliance
 
 The platform supports running under ISO/IEC 27001 and ISO/IEC 42001. It has
-sign-in on every endpoint, role-based access, sign-in throttling, a
+two-step sign-in on every endpoint, role-based access, sign-in throttling, a
 hash-chained audit log (admin page *Audit log*), HTTPS, and security headers.
 Every assisted annotation records the model and checkpoint SHA-256 that
 proposed it, and exports carry this. [docs/compliance/](docs/compliance/README.md)

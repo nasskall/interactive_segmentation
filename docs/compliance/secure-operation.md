@@ -58,7 +58,11 @@ Weekly, an admin opens **Audit log**:
 
 - **Check integrity** must report "Intact".
 - Review `Sign-ins` for bursts of `auth.login_failed` or any
-  `auth.login_blocked` (possible password guessing).
+  `auth.login_blocked` (possible password guessing), and for
+  `auth.2fa_failed` after `auth.password_ok` (someone who knows a password
+  but not the code: change that password). `auth.recovery_code_used` means
+  someone is without their phone; `auth.2fa_reset` that an account was reset
+  from the console.
 - Review `project.export` (who took data out) and `user.update` role
   changes.
 - Review `model.load` (production model switches; the SHA-256 must be in

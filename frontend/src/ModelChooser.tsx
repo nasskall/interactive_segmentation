@@ -61,7 +61,21 @@ export default function ModelChooser({ models, busy, buttonLabel, onLoad }: {
   const { candidates, max_members: max, fusions } = models.ensemble;
   const isEnsemble = type === ENSEMBLE;
   const chosen = candidates.filter((c) => members.has(key(c)));
-  const valid = isEnsemble ? chosen.length >= 2 && chosen.length <= max : !!ckpt;
+  // A checkpoint loads only as the model its file name says, so each type
+  // offers its own checkpoints, and types without one are left out.
+  const checkpointsOf = (t: string) =>
+    models.checkpoints.filter((c) => models.checkpoint_types[c] === t);
+  const types = models.model_types.filter((t) =>
+    t === ENSEMBLE ? candidates.length >= 2 : checkpointsOf(t).length > 0);
+  const missing = models.model_types.filter((t) => t !== ENSEMBLE && !types.includes(t));
+  const offered = isEnsemble ? [] : checkpointsOf(type);
+  const valid = isEnsemble ? chosen.length >= 2 && chosen.length <= max : offered.includes(ckpt);
+
+  const chooseType = (t: string) => {
+    setType(t);
+    const own = checkpointsOf(t);
+    if (t !== ENSEMBLE && !own.includes(ckpt)) setCkpt(own[0] ?? '');
+  };
 
   const toggle = (m: ModelRef) => {
     const next = new Set(members);
@@ -75,10 +89,16 @@ export default function ModelChooser({ models, busy, buttonLabel, onLoad }: {
   return (
     <>
       <label>Type
-        <select value={type} onChange={(e) => setType(e.target.value)} disabled={busy}>
-          {models.model_types.map((t) => <option key={t}>{t}</option>)}
+        <select value={type} onChange={(e) => chooseType(e.target.value)} disabled={busy}>
+          {types.map((t) => <option key={t}>{t}</option>)}
         </select>
       </label>
+      {missing.length > 0 && (
+        <p className="meta" title={missing.join(', ')}>
+          {missing.length} other model type{missing.length > 1 ? 's' : ''} need
+          {missing.length > 1 ? '' : 's'} a checkpoint in model_weights/ first.
+        </p>
+      )}
       {isEnsemble ? (
         <>
           <fieldset className="members">
@@ -114,7 +134,7 @@ export default function ModelChooser({ models, busy, buttonLabel, onLoad }: {
       ) : (
         <label>Checkpoint
           <select value={ckpt} onChange={(e) => setCkpt(e.target.value)} disabled={busy}>
-            {models.checkpoints.map((c) => <option key={c}>{c}</option>)}
+            {offered.map((c) => <option key={c}>{c}</option>)}
           </select>
         </label>
       )}

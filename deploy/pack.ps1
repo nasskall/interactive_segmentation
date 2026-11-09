@@ -1,12 +1,12 @@
 <#
-Bundle what the lab server cannot get from git: the built frontend (the server
-has no Node.js) and the model checkpoints (Meta's download site is blocked
-there, and they are not all in git). Run on this PC from the repo root:
+Bundle what the server cannot get from git: the built frontend (the server
+needs no Node.js) and the model checkpoints (they are not all in git, and the
+server may not reach their download sites). Run on this PC from the repo root:
 
     .\deploy\pack.ps1              # builds the frontend, writes iseg-bundle.tar.gz
     .\deploy\pack.ps1 -NoBuild     # reuse frontend\dist as it is
 
-Then copy it over and unpack it into the app folder (deploy/ailab26.md, step 3).
+Then copy it over and unpack it into the app folder (deploy/tensor2.md, step 3).
 model_weights\SHA256SUMS goes in too, for `sha256sum -c` on the server.
 #>
 param([string]$Out = 'iseg-bundle.tar.gz', [switch]$NoBuild)

@@ -189,6 +189,25 @@ def test_old_databases_gain_the_model_column(tmp_path):
 
 # ── transport ─────────────────────────────────────────────────────────────
 
+def test_api_docs_can_be_switched_off(fresh_ritm, device, ritm_checkpoint_path, tmp_path):
+    from fastapi.testclient import TestClient
+    from server.app import create_app
+    from server.sessions import ModelManager
+
+    def client(api_docs):
+        manager = ModelManager(fresh_ritm, device, 'RITM', ritm_checkpoint_path.name,
+                               ritm_checkpoint_path.parent)
+        return TestClient(create_app(manager, data_dir=tmp_path / f'data_{api_docs}',
+                                     api_docs=api_docs))
+
+    on, off = client(True), client(False)
+    assert on.get('/openapi.json').status_code == 200
+    assert on.get('/docs').status_code == 200
+    for path in ('/openapi.json', '/docs', '/redoc'):
+        assert off.get(path).status_code == 404
+    assert off.get('/api/auth/status').status_code == 200       # the API itself is unchanged
+
+
 def test_security_headers(admin):
     r = admin.get('/api/auth/me')
     assert r.headers['X-Frame-Options'] == 'DENY'
