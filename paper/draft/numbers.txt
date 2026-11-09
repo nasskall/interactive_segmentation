@@ -1,0 +1,130 @@
+# Numbers quoted in the paper text, as \res{key}. Read by tools/paper_numbers.py
+# (run through tools/paper_outputs.sh); paths are relative to results/.
+#   KEY  KIND  ARGS...   (see the docstring of tools/paper_numbers.py)
+# Model labels: base = SAM 2, adapted = SAM 2 adapted online, teacher /
+# accepted / gt = SAM 2 students (three seeds), simpleclick, sam, imis,
+# ritm (ISIC 2018 fine-tuned), ritm_coco, adapted_<model>.
+
+# ── robot clicks, ISIC 2018 test ─────────────────────────────────────────
+isic-base-iou1        mean  isic/summary.json  base         iou@1
+isic-base-noc90       mean  isic/summary.json  base         noc@90
+isic-adapted-noc90    mean  isic/summary.json  adapted      noc@90
+isic-teacher-noc90    mean  isic/summary.json  teacher      noc@90
+isic-acc-iou1         mean  isic/summary.json  accepted     iou@1
+isic-acc-noc90        mean  isic/summary.json  accepted     noc@90
+isic-gt-iou1          mean  isic/summary.json  gt           iou@1
+isic-gt-noc90         mean  isic/summary.json  gt           noc@90
+isic-sc-noc90         mean  isic/summary.json  simpleclick  noc@90
+isic-imis-iou1        mean  isic/summary.json  imis         iou@1
+isic-imis-noc90       mean  isic/summary.json  imis         noc@90
+isic-ritm-noc90       mean  isic/summary.json  ritm         noc@90
+isic-acc-base-d       diff  isic/summary.json  accepted:base         noc@90
+isic-acc-base-ci      ci    isic/summary.json  accepted:base         noc@90
+isic-acc-base-p       p     isic/summary.json  accepted:base         noc@90
+isic-acc-adapted-d    diff  isic/summary.json  accepted:adapted      noc@90
+isic-acc-adapted-p    p     isic/summary.json  accepted:adapted      noc@90
+isic-acc-teacher-d    diff  isic/summary.json  accepted:teacher      noc@90
+isic-acc-teacher-ci   ci    isic/summary.json  accepted:teacher      noc@90
+isic-acc-teacher-p    p     isic/summary.json  accepted:teacher      noc@90
+isic-gt-acc-d         diff  isic/summary.json  gt:accepted           noc@90
+isic-gt-acc-ci        ci    isic/summary.json  gt:accepted           noc@90
+isic-gt-acc-p         p     isic/summary.json  gt:accepted           noc@90
+isic-acc-sc-d         diff  isic/summary.json  accepted:simpleclick  noc@90
+isic-acc-sc-p         p     isic/summary.json  accepted:simpleclick  noc@90
+isic-acc-imis-d       diff  isic/summary.json  accepted:imis         noc@90
+isic-acc-imis-p       p     isic/summary.json  accepted:imis         noc@90
+
+# ── robot clicks, challenge-disjoint test ────────────────────────────────
+clean-base-iou1       mean  clean/summary.json  base         iou@1
+clean-base-noc90      mean  clean/summary.json  base         noc@90
+clean-adapted-noc90   mean  clean/summary.json  adapted      noc@90
+clean-teacher-noc90   mean  clean/summary.json  teacher      noc@90
+clean-acc-iou1        mean  clean/summary.json  accepted     iou@1
+clean-acc-noc90       mean  clean/summary.json  accepted     noc@90
+clean-gt-iou1         mean  clean/summary.json  gt           iou@1
+clean-gt-noc90        mean  clean/summary.json  gt           noc@90
+clean-sc-noc90        mean  clean/summary.json  simpleclick  noc@90
+clean-imis-iou1       mean  clean/summary.json  imis         iou@1
+clean-imis-noc90      mean  clean/summary.json  imis         noc@90
+clean-ritm-noc90      mean  clean/summary.json  ritm         noc@90
+clean-acc-base-d      diff  clean/summary.json  accepted:base         noc@90
+clean-acc-base-ci     ci    clean/summary.json  accepted:base         noc@90
+clean-acc-base-p      p     clean/summary.json  accepted:base         noc@90
+clean-acc-adapted-d   diff  clean/summary.json  accepted:adapted      noc@90
+clean-acc-adapted-p   p     clean/summary.json  accepted:adapted      noc@90
+clean-acc-teacher-d   diff  clean/summary.json  accepted:teacher      noc@90
+clean-acc-teacher-ci  ci    clean/summary.json  accepted:teacher      noc@90
+clean-acc-teacher-p   p     clean/summary.json  accepted:teacher      noc@90
+clean-gt-acc-d        diff  clean/summary.json  gt:accepted           noc@90
+clean-gt-acc-ci       ci    clean/summary.json  gt:accepted           noc@90
+clean-gt-acc-p        p     clean/summary.json  gt:accepted           noc@90
+clean-acc-sc-d        diff  clean/summary.json  accepted:simpleclick  noc@90
+clean-acc-sc-p        p     clean/summary.json  accepted:simpleclick  noc@90
+clean-acc-imis-d      diff  clean/summary.json  accepted:imis         noc@90
+clean-acc-imis-p      p     clean/summary.json  accepted:imis         noc@90
+
+# Domain shift of the same model between the two test sets.
+shift-base-noc90      delta noc@90  +clean/summary.json:base      -isic/summary.json:base
+shift-acc-noc90       delta noc@90  +clean/summary.json:accepted  -isic/summary.json:accepted
+shift-imis-noc90      delta noc@90  +clean/summary.json:imis      -isic/summary.json:imis
+
+# ── challenge-disjoint subgroups ─────────────────────────────────────────
+dom-base-noc90        mean  clean/summary_dominant_source.json  base      noc@90
+dom-acc-noc90         mean  clean/summary_dominant_source.json  accepted  noc@90
+oth-base-noc90        mean  clean/summary_other_sources.json    base      noc@90
+oth-acc-noc90         mean  clean/summary_other_sources.json    accepted  noc@90
+ge5-base-noc90        mean  clean/summary_lesion_ge5.json       base      noc@90
+ge5-acc-noc90         mean  clean/summary_lesion_ge5.json       accepted  noc@90
+oth-acc-base-d        diff  clean/summary_other_sources.json    accepted:base  noc@90
+oth-acc-base-p        p     clean/summary_other_sources.json    accepted:base  noc@90
+
+# ── box prompts ──────────────────────────────────────────────────────────
+isic-box-sam2-iou     mean  isic/summary_box0.json   sam2      iou
+isic-box-medsam-iou   mean  isic/summary_box0.json   medsam    iou
+isic-box-imis-iou     mean  isic/summary_box0.json   imis      iou
+isic-box-acc-iou      mean  isic/summary_box0.json   accepted  iou
+isic-box-gt-iou       mean  isic/summary_box0.json   gt        iou
+clean-box-sam2-iou    mean  clean/summary_box0.json  sam2      iou
+clean-box-medsam-iou  mean  clean/summary_box0.json  medsam    iou
+clean-box-imis-iou    mean  clean/summary_box0.json  imis      iou
+clean-box-acc-iou     mean  clean/summary_box0.json  accepted  iou
+clean-box-gt-iou      mean  clean/summary_box0.json  gt        iou
+isic-box-acc-medsam-d diff  isic/summary_box0.json   accepted:medsam  iou
+isic-box-acc-medsam-p p     isic/summary_box0.json   accepted:medsam  iou
+clean-box-acc-medsam-d diff clean/summary_box0.json  accepted:medsam  iou
+clean-box-acc-medsam-p p    clean/summary_box0.json  accepted:medsam  iou
+clean-box-acc-imis-d  diff  clean/summary_box0.json  accepted:imis    iou
+clean-box-acc-imis-p  p     clean/summary_box0.json  accepted:imis    iou
+# Change in IoU when every side of the box moves by up to 10% (jittered minus tight).
+clean-jit-acc         delta iou  +clean/summary_box0.1.json:accepted  -clean/summary_box0.json:accepted
+clean-jit-sam2        delta iou  +clean/summary_box0.1.json:sam2      -clean/summary_box0.json:sam2
+clean-jit-medsam      delta iou  +clean/summary_box0.1.json:medsam    -clean/summary_box0.json:medsam
+clean-jit-imis        delta iou  +clean/summary_box0.1.json:imis      -clean/summary_box0.json:imis
+
+# ── realistic clicks (RClicks) ───────────────────────────────────────────
+isic-rc-acc-noc90     mean  isic/summary_rc0-1.json     accepted        noc@90
+isic-rc-acc-robot-d   diff  isic/summary_rc0-1.json     accepted:robot_accepted  noc@90
+clean-rc-acc-noc90    mean  clean/summary_rc0-1.json    accepted        noc@90
+clean-rc-sam2-noc90   mean  clean/summary_rc0-1.json    sam2            noc@90
+clean-rc-acc-robot-d  diff  clean/summary_rc0-1.json    accepted:robot_accepted  noc@90
+clean-rc-acc-robot-p  p     clean/summary_rc0-1.json    accepted:robot_accepted  noc@90
+clean-rc-acc-sam2-d   diff  clean/summary_rc0-1.json    accepted:sam2   noc@90
+clean-rc-acc-sam2-p   p     clean/summary_rc0-1.json    accepted:sam2   noc@90
+clean-rclo-acc-noc90  mean  clean/summary_rc0-0.1.json  accepted        noc@90
+clean-rclo-sam2-noc90 mean  clean/summary_rc0-0.1.json  sam2            noc@90
+clean-rclo-acc-sam2-d diff  clean/summary_rc0-0.1.json  accepted:sam2   noc@90
+clean-rclo-acc-sam2-p p     clean/summary_rc0-0.1.json  accepted:sam2   noc@90
+clean-rclo-acc-robot-d diff clean/summary_rc0-0.1.json  accepted:robot_accepted  noc@90
+
+# ── inter-annotator agreement (tools/annotator_agreement.py) ─────────────
+agr-n                 value agreement/summary.json  pairwise/all/n                0
+agr-mean              value agreement/summary.json  pairwise/all/mean             3
+agr-lo                value agreement/summary.json  pairwise/all/ci95/0           3
+agr-hi                value agreement/summary.json  pairwise/all/ci95/1           3
+agr-median            value agreement/summary.json  pairwise/all/median           3
+agr-ge85              pct   agreement/summary.json  pairwise/all/share_ge0.85     1
+agr-ge90              pct   agreement/summary.json  pairwise/all/share_ge0.90     1
+agr-dom-mean          value agreement/summary.json  pairwise/dominant_source/mean 3
+agr-oth-mean          value agreement/summary.json  pairwise/other_sources/mean   3
+agr-ge5-mean          value agreement/summary.json  pairwise/lesion_ge5/mean      3
+agr-ref-mean          value agreement/summary.json  vs_reference/mean             3

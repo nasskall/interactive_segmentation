@@ -1,0 +1,12 @@
+generated/
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.pdf
+llncs.cls
+splncs04.bst
