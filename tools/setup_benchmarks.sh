@@ -139,7 +139,7 @@ side_venv rclicks-venv mmengine==0.10.7 mmcv-lite==2.1.0 ftfy==6.3.1 regex==2026
 
 if [ $DATA = 1 ]; then
   log "ISIC 2018 Task 1 (tools/build_isic_protocol.py)"
-  ISIC=https://isic-challenge-data.s3.amazonaws.com/2018
+  ISIC=https://isic-archive.s3.amazonaws.com/challenges/2018   # moved from isic-challenge-data on 2026-10-28
   RAW=datasets/isic2018/raw
   while read -r f size; do
     fetch "$ISIC/$f" "$RAW/$f" - "$size"
