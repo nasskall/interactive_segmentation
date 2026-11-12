@@ -25,6 +25,6 @@ latexmk -pdf main.tex
 ## Before submission
 
 - `\verify{...}`: red margin notes on sentences whose direction (which model is better) was written from the pilot runs. Check each one against the final numbers and reword it where needed. Then set `\finaltrue` in `main.tex` to hide the notes.
-- `\tbd{...}`: facts that are not in any results file: co-authors, affiliation, email, and the size of the clean IMA++ pool (`datasets/imapp/raw/clean_pool.json`, length of `clean`).
+- `\tbd{...}`: facts that are not in any results file: co-authors, affiliation, email.
 - `references.bib`: entries marked `VERIFY` have unchecked author lists or titles.
 - Spare keys in `numbers.txt`, for example the ISIC box results and the RITM rows, are ready for any sentence that needs them.
