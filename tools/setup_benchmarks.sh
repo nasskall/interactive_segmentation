@@ -135,7 +135,7 @@ if verify "$CKPT" $CKPT_SHA -; then echo "  ok  $CKPT"; else
   echo "  ok  $CKPT"
 fi
 side_venv rclicks-venv mmengine==0.10.7 mmcv-lite==2.1.0 ftfy==6.3.1 regex==2026.9.10 \
-          albumentations==2.0.8 easydict==1.13
+          albumentations==2.0.8 easydict==1.13 pandas==2.3.3   # pandas: imported by its TranSalNet
 
 if [ $DATA = 1 ]; then
   log "ISIC 2018 Task 1 (tools/build_isic_protocol.py)"
