@@ -20,7 +20,16 @@
 \usepackage{amssymb}
 \usepackage{xcolor}
 \usepackage{xr}
-\externaldocument[S-]{supplementary}  % compile supplementary.tex first
+% Supplementary table numbers come from supplementary.aux. Registering the
+% file as a dependency lets latexmk (and Overleaf, through latexmkrc) compile
+% supplementary.tex first on its own.
+\makeatletter
+\newcommand*{\addFileDependency}[1]{%
+  \typeout{(#1)}\@addtofilelist{#1}\IfFileExists{#1}{}{\typeout{No file #1.}}}
+\makeatother
+\externaldocument[S-]{supplementary}
+\addFileDependency{supplementary.tex}
+\addFileDependency{supplementary.aux}
 \usepackage[hidelinks]{hyperref}
 
 \newif\iffinal
