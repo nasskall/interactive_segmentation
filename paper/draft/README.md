@@ -18,8 +18,7 @@ bash tools/paper_outputs.sh           # paper/draft/generated/: tables, curves.p
 Then, in `paper/draft/`, with Springer's `llncs.cls` and `splncs04.bst` beside the sources:
 
 ```bash
-latexmk -pdf supplementary.tex        # first: main.tex reads its table numbers (xr)
-latexmk -pdf main.tex
+latexmk -pdf main.tex                 # builds supplementary.tex first (latexmkrc)
 ```
 
 ## Before submission

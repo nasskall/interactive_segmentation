@@ -1,0 +1,8 @@
+# Build supplementary.tex before main.tex reads its .aux (xr). Used by latexmk
+# locally and by Overleaf, which compiles only the main document.
+add_cus_dep('tex', 'aux', 0, 'makeexternaldocument');
+sub makeexternaldocument {
+    if (!($root_filename eq $_[0])) {
+        system("latexmk -cd -pdf \"$_[0]\"");
+    }
+}
