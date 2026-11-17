@@ -192,7 +192,7 @@ summaries() {   # summaries <results dir> <suffix> <extra paper_stats args>
     adapted_simpleclick=$res/adapted_simpleclick.json adapted_sam=$res/adapted_sam.json \
     adapted_ritm=$res/adapted_ritm.json adapted_ritm_coco=$res/adapted_ritm_coco.json \
     --compare accepted:base accepted:adapted accepted:teacher gt:accepted accepted:simpleclick accepted:imis \
-    $opt --json $res/summary$sfx.json")
+    accepted:adapted_simpleclick $opt --json $res/summary$sfx.json")
   for jit in 0 0.1; do
     cmds+=("$PY tools/paper_stats.py sam=$res/box${jit}_base_sam.json sam2=$res/box${jit}_base_sam2.json \
       medsam=$res/box${jit}_base_medsam.json imis=$res/box${jit}_base_imis.json \

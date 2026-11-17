@@ -62,6 +62,19 @@ clean-acc-sc-d        diff  clean/summary.json  accepted:simpleclick  noc@90
 clean-acc-sc-p        p     clean/summary.json  accepted:simpleclick  noc@90
 clean-acc-imis-d      diff  clean/summary.json  accepted:imis         noc@90
 clean-acc-imis-p      p     clean/summary.json  accepted:imis         noc@90
+# SimpleClick adapted online (one teacher member), the strongest baseline at NoC@90.
+isic-adsc-noc90       mean  isic/summary.json   adapted_simpleclick  noc@90
+isic-acc-adsc-d       diff  isic/summary.json   accepted:adapted_simpleclick  noc@90
+isic-acc-adsc-p       p     isic/summary.json   accepted:adapted_simpleclick  noc@90
+clean-adsc-noc90      mean  clean/summary.json  adapted_simpleclick  noc@90
+clean-adsc-noc85      mean  clean/summary.json  adapted_simpleclick  noc@85
+clean-acc-noc85       mean  clean/summary.json  accepted             noc@85
+clean-adsc-iou1       mean  clean/summary.json  adapted_simpleclick  iou@1
+clean-acc-adsc-d      diff  clean/summary.json  accepted:adapted_simpleclick  noc@90
+clean-acc-adsc-ci     ci    clean/summary.json  accepted:adapted_simpleclick  noc@90
+clean-acc-adsc-p      p     clean/summary.json  accepted:adapted_simpleclick  noc@90
+clean-acc-adsc-85d    diff  clean/summary.json  accepted:adapted_simpleclick  noc@85
+clean-acc-adsc-85p    p     clean/summary.json  accepted:adapted_simpleclick  noc@85
 
 # Domain shift of the same model between the two test sets.
 shift-base-noc90      delta noc@90  +clean/summary.json:base      -isic/summary.json:base
