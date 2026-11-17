@@ -40,16 +40,16 @@ class DistMaps(nn.Module):
         super(DistMaps, self).__init__()
         self.spatial_scale = spatial_scale
         self.norm_radius = norm_radius
-        self.cpu_mode = cpu_mode
+        # cpu_mode used to select the Cython extension (isegm/utils/cython_l),
+        # built at import time wherever a C compiler exists. Its queue holds
+        # 4*H*W entries, but a pixel is queued again each time its distance
+        # improves, so on some images it writes past the buffer (bounds checks
+        # are off): random segfaults and floating point exceptions on the
+        # Linux GPU server. The torch path below computes the same maps (and
+        # is what ran wherever the extension could not be built), so it is
+        # always used now; cpu_mode is accepted and ignored.
+        self.cpu_mode = False
         self.use_disks = use_disks
-        if self.cpu_mode:
-            try:
-                from isegm.utils.cython_l import get_dist_maps #.cython #!
-                self._get_dist_maps = get_dist_maps
-            except ImportError:
-                # The Cython extension needs a C compiler to build; the torch
-                # path below computes the same maps.
-                self.cpu_mode = False
 
     def get_coord_features(self, points, batchsize, rows, cols):
         if self.cpu_mode:

@@ -71,3 +71,7 @@ frontend/dist/
 
 # Server bundle made by deploy/pack.ps1
 /iseg-bundle.tar.gz
+
+# Benchmark results copied from ailab26 (tools/run_isic_benchmarks.sh)
+/results/
+/paper_results.tgz

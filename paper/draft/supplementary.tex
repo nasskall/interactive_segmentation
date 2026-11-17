@@ -1,0 +1,31 @@
+% Supplementary material: the generated tables that do not fit the main text.
+% Compile before main.tex (main.tex reads supplementary.aux through xr).
+\documentclass[runningheads]{llncs}
+
+\usepackage[T1]{fontenc}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\renewcommand{\thetable}{S\arabic{table}}
+\newcommand{\gentable}[1]{\IfFileExists{generated/#1.tex}{\input{generated/#1.tex}}%
+  {\begin{table}[h]\centering\caption{#1}\label{tab:#1}\fbox{\textcolor{red}{generated/#1.tex: run tools/paper\_outputs.sh}}\end{table}}}
+
+\begin{document}
+
+\title{Learning from Accepted Masks: Supplementary Material}
+\titlerunning{Supplementary Material}
+\author{}
+\institute{}
+\maketitle
+
+\gentable{robust_isic}
+\gentable{box_isic}
+\gentable{box_clean}
+\gentable{rclicks_isic}
+\gentable{rclicks_clean}
+\gentable{subgroups}
+\gentable{baselines}
+
+\end{document}

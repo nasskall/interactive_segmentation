@@ -53,6 +53,10 @@ from isegm.inference.predictors.ensemble import (EnsembleConfig, EnsembleNet,  #
 from interactive_demo.controller import InteractiveController   # noqa: E402
 
 DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+# ISEG_CUDNN=0 runs convolutions without cuDNN (tools/cudnn_check.sh); also
+# applies to distill.py and box_benchmark.py, which import this module.
+if __import__('os').environ.get('ISEG_CUDNN', '1') == '0':
+    torch.backends.cudnn.enabled = False
 WEIGHTS = ROOT / 'model_weights'
 CHECKPOINTS = {
     'ritm': ('best_checkpoint_068.pth', None),           # fine-tuned for skin lesions

@@ -10,11 +10,15 @@ skipped), with paths relative to the results directory:
     clean-gt-acc-ci   ci     clean/summary.json  gt:accepted  noc@90
     clean-gt-acc-p    p      clean/summary.json  gt:accepted  noc@90
     clean-acc-drop    delta  iou  +clean/summary_box0.1.json:accepted -clean/summary_box0.json:accepted
+    agr-mean          value  agreement/summary.json  pairwise/all/mean            3
+    agr-ge90          pct    agreement/summary.json  pairwise/all/share_ge0.90    1
 
 mean is a model's mean; diff, ci and p are a paired comparison (first model
-minus second); delta is a signed sum of model means. Numbers follow the
-tables: three decimals for IoU and Dice, two for NoC, signed values in math
-mode, p as $p<0.001$ or $p=0.012$.
+minus second); delta is a signed sum of model means. value and pct read any
+number of a JSON file by its /-separated path (list items by index, e.g.
+ci95/0) with the given decimals; pct multiplies by 100 and adds a LaTeX
+percent sign. Numbers follow the tables: three decimals for IoU and Dice,
+two for NoC, signed values in math mode, p as $p<0.001$ or $p=0.012$.
 
     python tools/paper_numbers.py --keys paper/draft/numbers.txt --results results \\
         --out paper/draft/generated/numbers.tex [--tex paper/draft --strict]
@@ -87,6 +91,15 @@ def value(res: Results, kind: str, args: list[str]) -> str:
                 raise ValueError(f'delta term {t} must start with + or -')
             total += res.mean(rel, model, metric) * (1 if sign == '+' else -1)
         return signed(total, metric)
+    if kind in ('value', 'pct'):
+        rel, path, places = args
+        x = res.summary(rel)
+        for part in path.split('/'):
+            try:
+                x = x[int(part)] if isinstance(x, list) else x[part]
+            except (KeyError, IndexError, ValueError):
+                raise KeyError(f'{path} not in {rel}') from None
+        return f'{float(x):.{int(places)}f}' if kind == 'value' else rf'{100 * float(x):.{int(places)}f}\%'
     raise ValueError(f'unknown kind {kind}')
 
 

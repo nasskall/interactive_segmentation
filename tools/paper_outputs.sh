@@ -22,7 +22,8 @@ CLICK_ROWS=("base=SAM 2" "adapted=SAM 2, adapted online" "simpleclick=SimpleClic
             "gt=Student (expert)")
 CMP_ROWS=("accepted:base=Accepted vs. SAM 2" "accepted:adapted=Accepted vs. adapted SAM 2"
           "accepted:teacher=Accepted vs. teacher" "gt:accepted=Expert vs. accepted"
-          "accepted:simpleclick=Accepted vs. SimpleClick" "accepted:imis=Accepted vs. IMIS-Net")
+          "accepted:simpleclick=Accepted vs. SimpleClick" "accepted:imis=Accepted vs. IMIS-Net"
+          "accepted:adapted_simpleclick=Accepted vs. adapted SimpleClick")
 
 $T table "${SETS[@]}" --metrics iou@1 noc@90 --rows "${CLICK_ROWS[@]}" --seed-sd \
   --caption "Robot-click results on both test sets: mean IoU after the first click and NoC@90, with 95\% bootstrap confidence intervals below each value and the best value in bold. Student rows average three seeds." \

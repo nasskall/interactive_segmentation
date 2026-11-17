@@ -157,7 +157,9 @@ def main():
     make_clicker = None
     if args.clicker == 'rclicks':
         from rclicks_clicker import RClicker, RClicksClient
-        client = RClicksClient(args.rclicks_python.resolve(), args.rclicks_root.resolve(),
+        # absolute(), not resolve(): a venv's bin/python is a symlink to the
+        # system interpreter, and following it runs the worker outside the venv.
+        client = RClicksClient(args.rclicks_python.absolute(), args.rclicks_root.resolve(),
                                args.rclicks_checkpoint.resolve())
         band = tuple(float(v) for v in args.rclicks_band.split(','))
         make_clicker = lambda gt, image: RClicker(gt.astype(np.int32), image, client, band, args.seed)  # noqa: E731
